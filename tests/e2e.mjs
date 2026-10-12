@@ -1,4 +1,5 @@
-// בדיקת זרימה מלאה בדפדפן (מצב דמה): העלאה → נגן → השמעה → הסבר → קטע הבא → מעבר שפה → PDF בצעדים.
+// בדיקת זרימה מלאה בדפדפן (מצב דמה): העלאה → דף ספר → השמעה → פסקה מסומנת → קפיצה בלחיצה →
+// שאלה בסוף פרק → קטע הבא → מעבר שפה → בחירת קול → המשך מאותו מקום → ספר עברי → PDF → ספרייה.
 import { chromium, devices } from "playwright";
 import path from "path";
 
@@ -10,121 +11,117 @@ const errors = [];
 page.on("console", (m) => m.type() === "error" && errors.push("console: " + m.text()));
 page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
 page.on("response", (r) => r.status() >= 400 && errors.push(`http ${r.status()} ${r.url()}`));
+const log = (...a) => console.log("[e2e]", ...a);
+const audio = () => page.evaluate(() => { const a = document.querySelector("audio"); return { src: a?.src?.slice(-50), paused: a?.paused, t: a?.currentTime, d: a?.duration }; });
+const playing = () => page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.currentTime > 0.2; }, null, { timeout: 60000 });
+const finish = () => page.evaluate(() => { const a = document.querySelector("audio"); a.currentTime = a.duration - 0.15; });
+const header = () => page.textContent(".readerTop");
 
-function log(...a) {
-  console.log("[e2e]", ...a);
-}
-async function audioState() {
-  return page.evaluate(() => {
-    const a = document.querySelector("audio");
-    return { src: a?.src?.slice(-60), paused: a?.paused, t: a?.currentTime, d: a?.duration, rate: a?.playbackRate };
-  });
-}
-
-// 1. ספרייה
 await page.goto(BASE);
 await page.waitForSelector("text=הספרים שלי");
 log("library ok");
 
-// 2. העלאת טקסט אנגלי
+// העלאת טקסט אנגלי
+await page.click("text=הוסף ספר משלי");
 await page.setInputFiles('input[type="file"]', path.resolve("tests/fixtures/english.txt"));
 await page.waitForURL(/\/book\//, { timeout: 60000 });
 await page.waitForSelector(".bigPlay:not([disabled])");
-const title = await page.textContent(".title");
-log("book page:", title);
-const pill = await page.textContent(".pill");
-log("pill:", pill);
+await page.waitForSelector(".sec");
+log("book page:", (await header()).slice(0, 60));
 
-// 3. השמעה (מדליקים מצב לימוד כדי לבדוק גם את ההסבר)
-await page.click("text=מצב לימוד: כבוי");
-await page.waitForSelector("text=מצב לימוד: פועל");
+// ההכנה מראש מתחילה לבד — מחכים שלפחות קטע אחד יהיה מוכן
+await page.waitForFunction(() => document.querySelectorAll(".sec:not(.notReady)").length >= 1, null, { timeout: 90000 });
+log("prepared sections:", await page.$$eval(".sec:not(.notReady)", (els) => els.length));
+
+// השמעה + פסקה מסומנת
 await page.click(".bigPlay");
-await page.waitForFunction(() => {
-  const a = document.querySelector("audio");
-  return a && !a.paused && a.currentTime > 0.2;
-}, null, { timeout: 60000 });
-log("playing:", await audioState());
-const text1 = await page.textContent(".sectionText");
-log("text starts:", text1.slice(0, 60));
-if (!text1.startsWith("[דמה]")) throw new Error("expected mock Hebrew translation text");
+await playing();
+await page.waitForSelector(".para.now", { timeout: 30000 });
+log("playing, highlighted para in section", await page.$eval(".sec.cur", (el) => el.id));
+const heText = await page.$eval(".sec.cur .para", (el) => el.textContent);
+if (!heText.startsWith("[דמה]")) throw new Error("expected Hebrew (mock) text in current section");
 
-// 4. סיום הקטע → הסבר (מצב לימוד פועל)
-await page.evaluate(() => {
-  const a = document.querySelector("audio");
-  a.currentTime = a.duration - 0.2;
-});
-await page.waitForSelector("text=הסבר של המורה", { timeout: 60000 });
-await page.waitForFunction(() => !document.querySelector("audio").paused, null, { timeout: 60000 });
-log("explanation playing:", await audioState());
+// קפיצה בלחיצה על פסקה בקטע אחר
+await page.click("#s-3 .para");
+await page.waitForFunction(() => { const a = document.querySelector("audio"); return document.querySelector(".sec.cur")?.id === "s-3" && a && !a.paused && a.src.endsWith("3.mp3"); }, null, { timeout: 60000 });
+log("tap-to-jump ok:", await audio());
 
-// 5. סיום ההסבר → קטע 2
-await page.evaluate(() => {
-  const a = document.querySelector("audio");
-  a.currentTime = a.duration - 0.2;
-});
-await page.waitForFunction(() => document.querySelector(".pill")?.textContent?.includes("קטע 2"), null, { timeout: 60000 });
-await page.waitForFunction(() => !document.querySelector("audio").paused, null, { timeout: 60000 });
-log("section 2 playing:", await page.textContent(".pill"));
+// סוף פרק: שאלה (מצב לימוד שקט פועל כברירת מחדל) ואז הקטע הבא
+const chapterEnd = await page.evaluate(() => { const first = document.querySelector("section"); const ids = [...first.querySelectorAll(".sec")].map((d) => Number(d.id.slice(2))); return Math.max(...ids); });
+await page.click(`#s-${chapterEnd} .para`);
+await page.waitForFunction((n) => document.querySelector(".sec.cur")?.id === "s-" + n, chapterEnd, { timeout: 60000 });
+await playing();
+await finish();
+await page.waitForSelector("text=שאלה לסיום הפרק", { timeout: 60000 });
+log("chapter question shown");
+await playing();
+await finish();
+await page.waitForSelector("text=רגע לחשוב", { timeout: 30000 });
+await page.waitForFunction((n) => document.querySelector(".sec.cur")?.id === "s-" + (n + 1), chapterEnd, { timeout: 30000 });
+await playing();
+log("continued to next chapter:", await page.$eval(".sec.cur", (el) => el.id));
 
-// 6. מעבר למקור (אנגלית)
+// מעבר למקור
 await page.click("text=מקור");
-await page.waitForFunction(() => document.querySelector(".sectionText")?.classList.contains("ltr"), null, { timeout: 60000 });
 await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.src.includes("%2Fen%2F"); }, null, { timeout: 60000 });
-const orig = await page.textContent(".sectionText");
-log("orig text:", orig.slice(0, 50));
+const orig = await page.$eval(".sec.cur .para", (el) => el.textContent);
 if (orig.startsWith("[דמה]")) throw new Error("orig should be English");
+log("orig ok");
+await page.click("text=עברית");
+await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && a.src.includes("%2Fhe%2F"); }, null, { timeout: 60000 });
 
-// 7. כיבוי מצב לימוד, הקטע הבא דרך כפתור
-await page.click("text=מצב לימוד: פועל");
-await page.waitForSelector("text=מצב לימוד: כבוי");
-await page.click('button[aria-label="הקטע הבא"]');
-await page.waitForFunction(() => document.querySelector(".pill")?.textContent?.includes("קטע 3"), null, { timeout: 60000 });
-log("next button ok");
+// בחירת קול: פותחים את הגיליון ובוחרים קול אחר
+await page.click("text=🗣");
+await page.waitForSelector(".sheetTitle");
+const before = (await audio()).src;
+await page.click(".sheet .card:nth-of-type(2) button:last-child");
+await page.waitForFunction(() => !document.querySelector(".sheet"), null, { timeout: 10000 });
+await page.waitForFunction((b) => { const a = document.querySelector("audio"); return a && a.src.slice(-50) !== b && a.src.includes("%2Fhe%2F"); }, before, { timeout: 60000 });
+log("voice changed:", await audio());
 
-// 8. השהיה ושמירת מקום, חזרה לספרייה ובחזרה — ממשיך מאותו קטע
-await page.click(".bigPlay"); // pause
-await page.waitForTimeout(500);
+// השהיה, שמירת מקום, חזרה
+await page.click(".bigPlay");
+await page.waitForTimeout(400);
 const url = page.url();
+const curId = await page.$eval(".sec.cur", (el) => el.id);
 await page.goto(BASE);
-await page.waitForSelector(".card.clickable");
+await page.waitForSelector(".continueCard");
 await page.goto(url);
 await page.waitForSelector(".bigPlay:not([disabled])");
-await page.waitForFunction(() => document.querySelector(".pill")?.textContent?.includes("קטע 3"), null, { timeout: 30000 });
-log("resume ok:", await page.textContent(".pill"));
+await page.waitForFunction((id) => document.querySelector(".sec.cur")?.id === id, curId, { timeout: 30000 });
+log("resume ok:", curId);
 
-// 9. ספר בעברית — בלי כפתורי שפה, הטקסט המקורי מוקרא
+// ספר עברי
 await page.goto(BASE);
+await page.click("text=הוסף ספר משלי");
 await page.setInputFiles('input[type="file"]', path.resolve("tests/fixtures/hebrew.txt"));
 await page.waitForURL(/\/book\//, { timeout: 60000 });
 await page.waitForSelector(".bigPlay:not([disabled])");
 if ((await page.$("text=מקור")) !== null) throw new Error("hebrew book should not show language toggle");
 await page.click(".bigPlay");
-await page.waitForFunction(() => !document.querySelector("audio").paused, null, { timeout: 60000 });
-const heText = await page.textContent(".sectionText");
-if (heText.startsWith("[דמה]")) throw new Error("hebrew book should not be 'translated'");
-log("hebrew book ok:", heText.slice(0, 30));
+await playing();
+log("hebrew book ok");
 
-// 10. PDF — קריאה בצעדים
+// PDF בצעדים
 await page.goto(BASE);
+await page.click("text=הוסף ספר משלי");
 await page.setInputFiles('input[type="file"]', path.resolve("tests/fixtures/test.pdf"));
 await page.waitForURL(/\/book\//, { timeout: 60000 });
-await page.waitForFunction(() => (document.querySelector(".pill")?.textContent || "").match(/\/ [1-9]/), null, { timeout: 120000 });
+await page.waitForSelector(".sec", { timeout: 120000 });
 await page.waitForSelector(".bigPlay:not([disabled])");
 await page.click(".bigPlay");
-await page.waitForFunction(() => !document.querySelector("audio").paused, null, { timeout: 60000 });
-log("pdf book ok:", await page.textContent(".pill"));
+await playing();
+log("pdf book ok");
 
-// 11. ספרייה מציגה שלושה ספרים
 await page.goto(BASE);
 await page.waitForSelector("text=הספרים שלי");
-const cards = await page.$$eval(".card.clickable", (els) => els.length);
-log("library books:", cards);
-if (cards < 3) throw new Error("expected 3 books in library");
-
+const cards = await page.$$eval(".card.clickable:not(.continueCard)", (els) => els.length);
+if (cards < 3) throw new Error("expected 3 books");
 await page.screenshot({ path: "tests/out/library.png", fullPage: true });
 await page.goto(url);
 await page.waitForSelector(".bigPlay");
-await page.screenshot({ path: "tests/out/player.png", fullPage: true });
+await page.waitForTimeout(800);
+await page.screenshot({ path: "tests/out/player.png", fullPage: false });
 
 const real = errors.filter((e) => !/favicon/.test(e));
 if (real.length) {

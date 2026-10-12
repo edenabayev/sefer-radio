@@ -15,7 +15,7 @@ const CSV_URLS = [
   "https://gutenberg.pglaf.org/cache/epub/feeds/pg_catalog.csv",
   "https://aleph.gutenberg.org/cache/epub/feeds/pg_catalog.csv",
 ];
-export const GUT_UA = "sefer-radio (personal study app; contact: edenabayev@gmail.com)";
+export const GUT_UA = "sefer-radio (personal study app)";
 
 let memo: { at: number; entries: CatalogEntry[] } | null = null;
 

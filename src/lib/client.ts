@@ -54,6 +54,7 @@ export interface BookMeta {
   chapters: number;
   createdAt: string;
   extraction?: { status: "pending" | "done" | "error"; totalPages: number; nextPage: number; error?: string };
+  progress?: { section: number; updatedAt: string };
 }
 export interface BookFull extends Omit<BookMeta, "sections" | "chapters"> {
   chapters: { title: string; start: number; end: number }[];
@@ -64,6 +65,8 @@ export interface Progress {
   offset: number;
   lang: "he" | "orig";
   study: boolean;
+  voice?: string;
+  rate?: number;
   updatedAt: string;
 }
 export interface AudioResult {

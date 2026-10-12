@@ -20,7 +20,10 @@ export interface Book {
   title: string;
   author?: string;
   lang: Lang;
-  source: { type: "gutenberg"; gid: number } | { type: "upload"; url: string; pathname?: string; filename: string; kind: "pdf" | "epub" | "txt" };
+  source:
+    | { type: "gutenberg"; gid: number }
+    | { type: "archive"; identifier: string; url?: string; pathname?: string; kind?: "pdf" | "txt" }
+    | { type: "upload"; url: string; pathname?: string; filename: string; kind: "pdf" | "epub" | "txt" };
   createdAt: string;
   chapters: Chapter[];
   sections: Section[];
@@ -37,13 +40,16 @@ export interface BookMeta {
   chapters: number;
   createdAt: string;
   extraction?: Pick<Extraction, "status" | "totalPages" | "nextPage" | "error">;
+  progress?: { section: number; updatedAt: string };
 }
 
 export interface Progress {
   section: number;
   offset: number; // שניות בתוך הקטע
   lang: "he" | "orig";
-  study: boolean;
+  study: boolean; // מצב לימוד שקט: תקציר בחזרה + שאלה בסוף פרק
+  voice?: string;
+  rate?: number;
   updatedAt: string;
 }
 
@@ -82,10 +88,15 @@ export async function listBooks(): Promise<BookMeta[]> {
   const paths = await store.listPaths("books/");
   const ids = paths.filter((p) => p.endsWith("/book.json")).map((p) => p.split("/")[1]);
   const books = await Promise.all(ids.map((id) => getBook(id)));
-  return books
-    .filter((b): b is Book => !!b)
-    .map(toMeta)
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  const metas = await Promise.all(
+    books
+      .filter((b): b is Book => !!b)
+      .map(async (b) => {
+        const p = await getProgress(b.id);
+        return { ...toMeta(b), progress: p.updatedAt ? { section: p.section, updatedAt: p.updatedAt } : undefined };
+      }),
+  );
+  return metas.sort((a, b) => ((a.progress?.updatedAt || a.createdAt) < (b.progress?.updatedAt || b.createdAt) ? 1 : -1));
 }
 
 export async function deleteBook(id: string) {
@@ -191,14 +202,15 @@ async function readSource(url: string, pathname?: string): Promise<Buffer> {
   return Buffer.from(await (await fetch(url)).arrayBuffer());
 }
 
-export async function createFromUpload(url: string, filename: string, pathname?: string): Promise<Book> {
+export async function createFromUpload(url: string, filename: string, pathname?: string, meta?: { id?: string; title?: string; author?: string }): Promise<Book> {
   const ext = (filename.split(".").pop() || "").toLowerCase();
   const kind: "pdf" | "epub" | "txt" = ext === "pdf" ? "pdf" : ext === "epub" ? "epub" : "txt";
   const data = await readSource(url, pathname);
-  const id = "u" + newId(filename);
+  const id = meta?.id || "u" + newId(filename);
   const base: Omit<Book, "chapters" | "sections" | "lang"> = {
     id,
-    title: filename.replace(/\.[^.]+$/, ""),
+    title: meta?.title || filename.replace(/\.[^.]+$/, ""),
+    author: meta?.author,
     source: { type: "upload", url, pathname, filename, kind },
     createdAt: new Date().toISOString(),
   };
@@ -212,7 +224,7 @@ export async function createFromUpload(url: string, filename: string, pathname?:
   if (kind === "epub") {
     const e = await epubToParagraphs(data);
     const { chapters, sections } = buildSections(e.paragraphs);
-    const book: Book = { ...base, title: e.title || base.title, author: e.author, lang: detectLang(e.paragraphs.join("\n")), chapters, sections };
+    const book: Book = { ...base, title: meta?.title || e.title || base.title, author: meta?.author || e.author, lang: detectLang(e.paragraphs.join("\n")), chapters, sections };
     await saveBook(book);
     return book;
   }
@@ -235,7 +247,7 @@ export async function extractStep(id: string): Promise<Book> {
   if (!book) throw new Error("אין ספר כזה");
   const ex = book.extraction;
   if (!ex || ex.status === "done") return book;
-  if (book.source.type !== "upload") return book;
+  if (book.source.type === "gutenberg" || !book.source.url) return book;
   const from = ex.nextPage;
   const to = Math.min(ex.totalPages, from + PDF_CHUNK_PAGES - 1);
   try {
@@ -363,7 +375,7 @@ export async function answerQuestion(book: Book, i: number, audio: Buffer, mimeT
 // ---------- התקדמות ----------
 
 export async function getProgress(id: string): Promise<Progress> {
-  return (await store.readJSON<Progress>(P.progress(id))) ?? { section: 0, offset: 0, lang: "he", study: false, updatedAt: "" };
+  return (await store.readJSON<Progress>(P.progress(id))) ?? { section: 0, offset: 0, lang: "he", study: true, updatedAt: "" };
 }
 
 export async function setProgress(id: string, p: Partial<Progress>) {

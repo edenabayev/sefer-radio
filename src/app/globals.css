@@ -205,3 +205,244 @@ h2 {
 .status {
   min-height: 1.6em;
 }
+
+/* ---------- ערכות נושא לדף הספר ---------- */
+:root[data-theme="light"] {
+  --bg: #fafaf7;
+  --panel: #ffffff;
+  --panel-2: #efefea;
+  --text: #1c1c1c;
+  --muted: #6b6b66;
+  --band: #ffe9a8;
+}
+:root[data-theme="sepia"] {
+  --bg: #f4ecd8;
+  --panel: #faf3e3;
+  --panel-2: #ebe2cc;
+  --text: #3b2f1e;
+  --muted: #7a6a4f;
+  --band: #ffd98a;
+}
+:root[data-theme="dark"],
+:root {
+  --band: #3a3418;
+}
+.small {
+  font-size: 0.85em;
+}
+.big {
+  font-size: 1.25em;
+  font-weight: 700;
+}
+
+/* ---------- מסך ההאזנה ---------- */
+.reader {
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+}
+.readerTop {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  font-size: 16px;
+}
+.readerTitle {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bookText {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 18px 20px 0;
+  font-family: "David Libre", "Frank Ruhl Libre", Georgia, "Times New Roman", "Noto Serif Hebrew", serif;
+  line-height: 1.75;
+}
+.bookText[dir="ltr"] {
+  text-align: left;
+}
+.chapterHead {
+  font-family: system-ui, sans-serif;
+  font-size: 0.9em;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 34px 0 10px;
+  font-weight: 600;
+}
+.sec {
+  transition: opacity 0.3s;
+}
+.sec.notReady {
+  opacity: 0.55;
+}
+.sec.untranslated {
+  font-family: Georgia, serif;
+  opacity: 0.45;
+}
+.para {
+  margin: 0 0 1em;
+  padding: 2px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.25s;
+}
+.sec.cur .para {
+  opacity: 1;
+}
+.para.now {
+  background: var(--band);
+}
+.interlude {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 0 0 18px;
+  font-family: system-ui, sans-serif;
+  font-size: 0.95em;
+  line-height: 1.6;
+}
+.playerBar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  background: var(--panel);
+  border-top: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  padding: 6px 12px calc(10px + env(safe-area-inset-bottom));
+  font-size: 16px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.playerBar .bar {
+  margin: 4px 0;
+  cursor: pointer;
+  height: 8px;
+}
+.playerBar .bigPlay {
+  width: 72px;
+  height: 72px;
+  font-size: 1.6em;
+}
+.playerBar .iconBtn {
+  width: 52px;
+  height: 52px;
+  min-height: 52px;
+  font-size: 1em;
+}
+.playerBar .iconBtn.sm {
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+  font-size: 0.85em;
+}
+.playerBar .iconBtn.mic {
+  background: #2e3a2f;
+  border: 1px solid var(--ok);
+}
+.chips {
+  margin-top: 8px;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chip {
+  min-height: 38px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.9em;
+  background: var(--panel-2);
+  color: var(--text);
+  white-space: nowrap;
+}
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 21;
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 20px 20px 0 0;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  max-height: 75dvh;
+  overflow: auto;
+  font-size: 16px;
+  font-family: system-ui, sans-serif;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.sheetTitle {
+  font-weight: 700;
+  font-size: 1.1em;
+  margin-bottom: 10px;
+}
+.sheet .card {
+  background: var(--panel-2);
+}
+.sheet .card.on {
+  outline: 1px solid var(--ok);
+}
+.continueCard {
+  border: 1px solid var(--accent);
+}
+.liveOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: #0f1216;
+  color: #eef1f5;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
+  font-family: system-ui, sans-serif;
+  font-size: 18px;
+}
+.liveState {
+  font-size: 1.6em;
+  font-weight: 800;
+  text-align: center;
+  margin: 24px 0;
+}
+.transcript {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.transcript .line {
+  padding: 10px 14px;
+  border-radius: 14px;
+  max-width: 90%;
+}
+.transcript .user {
+  background: #243041;
+  align-self: flex-start;
+}
+.transcript .model {
+  background: #1f2a22;
+  align-self: flex-end;
+}
+.endLive {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 800;
+  font-size: 1.2em;
+  min-height: 72px;
+  margin-top: 16px;
+}

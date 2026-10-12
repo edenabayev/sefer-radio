@@ -10,8 +10,10 @@ export const MODELS = {
   text: process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash",
   tts: process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-lite-tts",
   pdf: process.env.GEMINI_PDF_MODEL || process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash",
+  live: process.env.GEMINI_LIVE_MODEL || "", // נבחר בזמן ריצה מתוך הרשימה למטה
 };
-export const VOICE = process.env.GEMINI_VOICE || "Zephyr";
+const LIVE_CANDIDATES = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest", "gemini-2.5-flash-native-audio-preview-12-2025"];
+export const VOICE = process.env.GEMINI_VOICE || "Puck"; // מדורג ראשון בעברית בזירת ivrit.ai
 export const SAMPLE_RATE = 24000;
 
 let client: GoogleGenAI | null = null;
@@ -185,6 +187,50 @@ export async function askWithAudio(audio: Buffer, mimeType: string, context: str
     { systemInstruction: system, maxOutputTokens: 2048, temperature: 0.5 },
   );
   return (res.text ?? "").trim();
+}
+
+let modelsMemo: { at: number; names: string[] } | null = null;
+async function cachedModels(): Promise<string[]> {
+  if (modelsMemo && Date.now() - modelsMemo.at < 10 * 60 * 1000) return modelsMemo.names;
+  const names = await listModels();
+  modelsMemo = { at: Date.now(), names };
+  return names;
+}
+
+/** בוחר את מודל השיחה החיה: מה שהוגדר, ואם לא — הראשון מהרשימה שקיים בחשבון. */
+export async function pickLiveModel(): Promise<string> {
+  if (MODELS.live) return MODELS.live;
+  if (MOCK) return LIVE_CANDIDATES[0];
+  const names = await cachedModels();
+  for (const c of LIVE_CANDIDATES) if (names.some((n) => n === c || n.endsWith("/" + c))) return c;
+  return LIVE_CANDIDATES[1];
+}
+
+/** מפתח זמני לשיחה חיה מהדפדפן — נעול למודל ולהוראות שנקבעו כאן; המפתח האמיתי נשאר בשרת. */
+export async function createLiveToken(systemInstruction: string, voice = VOICE): Promise<{ token: string; model: string; expiresAt: string }> {
+  const model = await pickLiveModel();
+  const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  if (MOCK) return { token: "mock-token", model, expiresAt: expireTime };
+  const alpha = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { apiVersion: "v1alpha" } });
+  const tok = await alpha.authTokens.create({
+    config: {
+      uses: 1,
+      expireTime,
+      newSessionExpireTime: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+      liveConnectConstraints: {
+        model,
+        config: {
+          responseModalities: ["AUDIO" as never],
+          systemInstruction,
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+        },
+      },
+    },
+  });
+  if (!tok.name) throw new Error("לא התקבל מפתח זמני לשיחה");
+  return { token: tok.name, model, expiresAt: expireTime };
 }
 
 export async function listModels(): Promise<string[]> {
