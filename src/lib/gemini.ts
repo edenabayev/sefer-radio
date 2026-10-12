@@ -45,31 +45,50 @@ export async function genText(prompt: string, system?: string, maxOutputTokens =
 }
 
 /** מפרק טקסט ארוך לחתיכות שמנוע הקול מקבל בנוחות (לפי משפטים). */
-export function splitForTts(text: string, max = 1800): string[] {
+const bytes = (t: string) => Buffer.byteLength(t, "utf8");
+
+/** ניקוי לפני הקראה: כתובות אינטרנט, שורות "מעודכן לתאריך" של בן־יהודה, סימני עיצוב, שלוש נקודות וקווים. */
+export function cleanForTts(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/benyehuda\.org|פרויקט בן.יהודה|מעודכן לתאריך|^\s*https?:\/\//.test(line))
+    .join("\n")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[*_#>`]+/g, "")
+    .replace(/…/g, ".")
+    .replace(/\s[–—-]\s/g, ", ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+/** מסיר ניקוד וטעמים (כשהמנוע נכשל על טקסט מנוקד). */
+export function stripNiqqud(text: string): string {
+  return text.replace(/[\u0591-\u05C7]/g, "");
+}
+
+/** מפרק טקסט ארוך לחתיכות שמנוע הקול מקבל — לפי *בייטים* (עברית מנוקדת שוקלת הרבה יותר מאותיות). */
+export function splitForTts(text: string, maxBytes = 3000): string[] {
   const out: string[] = [];
   let buf = "";
   const sentences = text.split(/(?<=[.!?:;״”"])\s+|\n+/);
+  const push = () => {
+    if (buf.trim()) out.push(buf.trim());
+    buf = "";
+  };
   for (const s of sentences) {
     if (!s.trim()) continue;
-    if (buf.length + s.length + 1 > max && buf) {
-      out.push(buf.trim());
-      buf = "";
-    }
-    if (s.length > max) {
+    if (bytes(buf) + bytes(s) + 1 > maxBytes && buf) push();
+    if (bytes(s) > maxBytes) {
       // משפט ענק — חותכים במילים
-      const words = s.split(/\s+/);
-      for (const w of words) {
-        if (buf.length + w.length + 1 > max && buf) {
-          out.push(buf.trim());
-          buf = "";
-        }
+      for (const w of s.split(/\s+/)) {
+        if (bytes(buf) + bytes(w) + 1 > maxBytes && buf) push();
         buf += (buf ? " " : "") + w;
       }
       continue;
     }
     buf += (buf ? " " : "") + s;
   }
-  if (buf.trim()) out.push(buf.trim());
+  push();
   return out;
 }
 
@@ -108,26 +127,42 @@ export const VOICES: { id: string; label: string }[] = [
 export const TTS_VERSION = "v2"; // משתנה כשאופן היצירה משתנה — כדי לא להגיש שמע ישן ושגוי
 
 /** טקסט → PCM 16 ביט מונו 24kHz (ב-Buffer). נשלח הטקסט בלבד — כל מילה נוספת תוקרא. */
+async function ttsChunk(part: string, voice: string): Promise<Buffer> {
+  const res = await ai().models.generateContent({
+    model: MODELS.tts,
+    contents: part,
+    config: {
+      responseModalities: ["AUDIO"],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+    },
+  });
+  const data = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData;
+  if (!data?.data) throw new Error("Gemini TTS לא החזיר שמע (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
+  return Buffer.from(data.data, "base64");
+}
+
 export async function tts(text: string, lang: string, voice = VOICE): Promise<Buffer> {
   void lang; // Gemini מזהה את השפה לבד
-  const parts = splitForTts(text);
+  const clean = cleanForTts(text);
+  if (!clean) return fakePcm(0.5);
   if (MOCK) {
     const secs = Math.max(2, Math.min(12, text.length / 150));
     return fakePcm(secs);
   }
   const bufs: Buffer[] = [];
-  for (const part of parts) {
-    const res = await ai().models.generateContent({
-      model: MODELS.tts,
-      contents: part,
-      config: {
-        responseModalities: ["AUDIO"],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-      },
-    });
-    const data = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData;
-    if (!data?.data) throw new Error("Gemini TTS לא החזיר שמע (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
-    bufs.push(Buffer.from(data.data, "base64"));
+  for (const part of splitForTts(clean)) {
+    try {
+      bufs.push(await ttsChunk(part, voice));
+    } catch (e) {
+      // ניסיון שני: בלי ניקוד ובחתיכות קטנות יותר (טקסט מנוקד כבד למנוע)
+      const plain = stripNiqqud(part);
+      const smaller = splitForTts(plain, 1500);
+      try {
+        for (const sp of smaller) bufs.push(await ttsChunk(sp, voice));
+      } catch {
+        throw e;
+      }
+    }
   }
   return Buffer.concat(bufs);
 }

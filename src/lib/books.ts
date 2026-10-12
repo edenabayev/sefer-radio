@@ -5,7 +5,7 @@ import * as store from "./storage";
 import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
-import { buildSections, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
+import { buildSections, cleanSourceText, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
 export interface Extraction {
   status: "pending" | "done" | "error";
@@ -215,7 +215,7 @@ export async function createFromUpload(url: string, filename: string, pathname?:
     createdAt: new Date().toISOString(),
   };
   if (kind === "txt") {
-    const text = data.toString("utf8");
+    const text = cleanSourceText(data.toString("utf8"));
     const { chapters, sections } = buildSections(toParagraphs(text));
     const book: Book = { ...base, lang: detectLang(text), chapters, sections };
     await saveBook(book);
@@ -237,6 +237,28 @@ export async function createFromUpload(url: string, filename: string, pathname?:
     sections: [],
     extraction: { status: "pending", totalPages, nextPage: 1, markdown: "" },
   };
+  await saveBook(book);
+  return book;
+}
+
+/** בנייה מחדש של הקטעים מקובץ המקור (אחרי שיפור בניקוי/חלוקה). שומר את המזהה; שמע ותרגום ישנים נשארים לפי מספר קטע. */
+export async function rebuildBook(id: string): Promise<Book> {
+  const book = await getBook(id);
+  if (!book) throw new Error("אין ספר כזה");
+  if (book.source.type !== "upload" || book.source.kind === "pdf") return book;
+  const data = await readSource(book.source.url, book.source.pathname);
+  if (book.source.kind === "txt") {
+    const text = cleanSourceText(data.toString("utf8"));
+    const b = buildSections(toParagraphs(text));
+    book.chapters = b.chapters;
+    book.sections = b.sections;
+    book.lang = detectLang(text);
+  } else {
+    const e = await epubToParagraphs(data);
+    const b = buildSections(e.paragraphs);
+    book.chapters = b.chapters;
+    book.sections = b.sections;
+  }
   await saveBook(book);
   return book;
 }

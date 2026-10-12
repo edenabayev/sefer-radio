@@ -12,6 +12,13 @@ export function detectLang(sample: string): Lang {
   return heb > 0 ? "he" : "other";
 }
 
+/** מסיר שורות מידע של בן־יהודה ("מעודכן לתאריך", כתובת) וכתובות אינטרנט בודדות מתחילת קובץ טקסט. */
+export function cleanSourceText(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const head = lines.slice(0, 25).filter((l) => !/benyehuda\.org|פרויקט בן.יהודה|מעודכן לתאריך|^\s*https?:\/\/\S+\s*$/.test(l));
+  return [...head, ...lines.slice(25)].join("\n");
+}
+
 /** מסיר את הכותרת והסיום של פרויקט גוטנברג. */
 export function stripGutenberg(raw: string): string {
   let t = raw.replace(/\r\n/g, "\n");

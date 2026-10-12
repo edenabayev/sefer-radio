@@ -1,0 +1,10 @@
+import { splitForTts, cleanForTts, stripNiqqud } from "@/lib/gemini";
+const heb = "אלף לילה ולילה: סִפּוּר הַמֶּלֶךְ שַׁהְרִיָּאר וְשַׁהַרָזָאד\n\nמעודכן לתאריך: 2026-07-21  מתוך פרויקט בן־יהודה. זמין בכתובת https://benyehuda.org//read/6973\n\n" + "וַיְהִי הַיּוֹם וְהַמֶּלֶךְ יָצָא לָצוּד בַּיַּעַר, וַיִּרְא אַיָּל רָץ. ".repeat(60);
+const c = cleanForTts(heb);
+if (c.includes("benyehuda") || c.includes("מעודכן")) throw new Error("header not cleaned");
+const parts = splitForTts(c);
+const maxB = Math.max(...parts.map((p) => Buffer.byteLength(p)));
+console.log("parts", parts.length, "max bytes", maxB, "chars", Math.max(...parts.map((p) => p.length)));
+if (maxB > 3000) throw new Error("chunk over byte limit");
+if (stripNiqqud("שַׁלוֹם").length !== 4) throw new Error("niqqud strip failed");
+console.log("TTS SPLIT OK");
