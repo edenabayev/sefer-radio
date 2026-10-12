@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# רדיו ספרים
 
-## Getting Started
+אפליקציה אישית: מחפשים ספר (או מעלים קובץ), ותוך שניות שומעים אותו בעברית, עם מורה שמסביר כל קטע ועונה לשאלות בקול. בנויה לאנדרואיד עם אוזניות, באוטו.
 
-First, run the development server:
+## מה יש בפנים
+- **מקורות**: חיפוש בפרויקט גוטנברג (ספרי מופת באנגלית, חינם) או העלאת קובץ משלך — טקסט, EPUB או PDF, בעברית או באנגלית (גם סרוק).
+- **עברית כברירת מחדל**: ספר באנגלית מתורגם קטע-קטע; לחיצה אחת מחזירה למקור. ספר בעברית מוקרא ישירות.
+- **מצב לימוד**: אחרי כל קטע המורה מסביר. לחיצה ארוכה על כפתור המיקרופון — שאלה בקול, תשובה בקול, והספר ממשיך.
+- **זיכרון**: תרגום, שמע והסבר נוצרים פעם אחת לכל קטע ונשמרים. המקום האחרון נשמר. ספר שנפתח שוב לא מייצר כלום מחדש.
+- **באוטו**: קובצי MP3 אמיתיים דרך נגן אחד + Media Session — ממשיך עם מסך כבוי, נשלט מכפתורי האוזניות וממסך הנעילה.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## פריסה ב-Vercel (פעם אחת)
+1. ב-[Google AI Studio](https://aistudio.google.com/apikey) צור מפתח API, והפעל חיוב (Tier 1) על הפרויקט שלו.
+2. ב-Vercel: **Add New → Project → Import** את המאגר הזה.
+3. בעמוד הפרויקט ב-Vercel → **Storage → Create Database → Blob** (חינם). זה מוסיף לבד את `BLOB_READ_WRITE_TOKEN`.
+4. **Settings → Environment Variables**: הוסף `GEMINI_API_KEY` (המפתח משלב 1) ו-`APP_PASSWORD` (סיסמה שתבחר — האפליקציה פתוחה לכל העולם, והמפתח שלך משלם).
+5. **Deployments → Redeploy** (כדי שהמשתנים ייכנסו).
+6. פתח את הכתובת בטלפון ב-Chrome, ובתפריט בחר "הוסף למסך הבית".
+
+בדיקת תקינות: `https://<האתר>/api/health` מראה אם המפתח עובד ואם שמות המודלים קיימים.
+
+## משתני סביבה
+ראה `.env.example`. אופציונלי: `GEMINI_TEXT_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_VOICE` (ברירת מחדל Zephyr; אפשרויות טובות לעברית: Zephyr, Puck, Kore).
+
+## הרצה מקומית
+```
+npm install
+MOCK_AI=1 npm run dev     # מצב דמה: בלי מפתח, קול מדומה, אחסון בתיקייה .data/
+node tests/e2e.mjs        # בדיקת זרימה מלאה בדפדפן (השרת צריך לרוץ על 3123)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## עלויות (אוקטובר 2026, מפתח AI Studio)
+תרגום ספר של 300 עמודים ≈ $1 · קול Gemini Flash-Lite TTS ≈ $5–6 לספר · הסבר ≈ סנט לקטע · קריאת PDF ≈ סנטים לספר. הכול פעם אחת. מחירי Gemini מוכפלים ב-1.1.2027.
