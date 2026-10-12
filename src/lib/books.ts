@@ -2,6 +2,7 @@
 // ונבדק לפני שמייצרים — "הזיכרון" של האפליקציה.
 import crypto from "crypto";
 import * as store from "./storage";
+import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { buildSections, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
@@ -107,17 +108,23 @@ export interface GutenbergHit {
   textUrl?: string;
 }
 
-const GUT_UA = "sefer-radio (personal study app; contact: edenabayev@gmail.com)";
 
 function xmlText(block: string, tag: string): string | undefined {
   const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
   return m ? m[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").trim() : undefined;
 }
 
-/** חיפוש בקטלוג ה-OPDS הרשמי של גוטנברג (gutendex חסום לשרתים). */
+/** חיפוש: קודם בקטלוג המקומי (מהיר ויציב), ואם אין — בקטלוג ה-OPDS של גוטנברג (gutendex חסום לשרתים). */
 export async function searchGutenberg(q: string): Promise<GutenbergHit[]> {
-  const r = await fetch(`https://www.gutenberg.org/ebooks/search.opds/?query=${encodeURIComponent(q)}`, { headers: { "User-Agent": GUT_UA } });
-  if (!r.ok) throw new Error("gutenberg search " + r.status);
+  const catalog = await loadCatalog();
+  if (catalog) {
+    return searchCatalog(catalog, q).map((e) => ({ gid: e.gid, title: e.title, author: e.author || undefined, languages: [e.lang], downloads: 0, textUrl: gutenbergTextUrl(e.gid) }));
+  }
+  return searchGutenbergOpds(q);
+}
+
+export async function searchGutenbergOpds(q: string): Promise<GutenbergHit[]> {
+  const r = await fetchWithMirrors([`https://www.gutenberg.org/ebooks/search.opds/?query=${encodeURIComponent(q)}`]);
   const xml = await r.text();
   const entries = xml.split("<entry>").slice(1);
   const hits: GutenbergHit[] = [];
@@ -129,9 +136,8 @@ export async function searchGutenberg(q: string): Promise<GutenbergHit[]> {
     const title = xmlText(e, "title") || `#${gid}`;
     // בפיד של גוטנברג שם המחבר יושב ב-<content>, לא ב-<author>
     const author = xmlText(e, "name") || xmlText(e, "content");
-    const lang = xmlText(e, "dcterms:language") || (e.match(/Language:\s*([A-Za-z]+)/)?.[1] ?? "");
-    const dl = Number(e.match(/Downloads:\s*([\d,]+)/)?.[1]?.replace(/,/g, "") ?? 0);
-    hits.push({ gid, title, author, languages: lang ? [lang.toLowerCase().slice(0, 2)] : [], downloads: dl, textUrl: gutenbergTextUrl(gid) });
+    const lang = xmlText(e, "dcterms:language") || "";
+    hits.push({ gid, title, author, languages: lang ? [lang.toLowerCase().slice(0, 2)] : [], downloads: 0, textUrl: gutenbergTextUrl(gid) });
     if (hits.length >= 15) break;
   }
   return hits;
@@ -146,8 +152,12 @@ export async function createFromGutenberg(gid: number, hint?: { title?: string; 
   const existing = await getBook(`g${gid}`);
   if (existing) return existing;
 
-  const r = await fetch(gutenbergTextUrl(gid), { headers: { "User-Agent": GUT_UA } });
-  if (!r.ok) throw new Error("gutenberg " + r.status + " — לספר הזה אין גרסת טקסט פשוט");
+  const r = await fetchWithMirrors([
+    gutenbergTextUrl(gid),
+    `https://gutenberg.pglaf.org/cache/epub/${gid}/pg${gid}.txt`,
+    `https://aleph.gutenberg.org/cache/epub/${gid}/pg${gid}.txt`,
+    `https://www.gutenberg.org/ebooks/${gid}.txt.utf-8`,
+  ]);
   const raw = await r.text();
   const header = raw.slice(0, 4000);
   const title = hint?.title || header.match(/^Title:\s*(.+)$/m)?.[1]?.trim() || `Gutenberg #${gid}`;
