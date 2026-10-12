@@ -71,13 +71,43 @@ export function splitForTts(text: string, max = 1800): string[] {
   return out;
 }
 
-const STYLE: Record<string, string> = {
-  he: "קרא את הטקסט הבא בקול בעברית, בקצב רגוע וברור, כמו קריין ספרי שמע. קרא רק את הטקסט עצמו, בלי להוסיף דבר:\n\n",
-  en: "Read the following text aloud in English, in a calm, clear audiobook-narrator voice. Read only the text itself, adding nothing:\n\n",
-};
+/** הקולות המובנים של Gemini TTS. המודל קורא כל טקסט שנשלח אליו — לכן שולחים רק את הטקסט, בלי הוראות. */
+export const VOICES: { id: string; label: string }[] = [
+  { id: "Zephyr", label: "Zephyr — בהיר" },
+  { id: "Puck", label: "Puck — נמרץ" },
+  { id: "Kore", label: "Kore — נחרץ" },
+  { id: "Charon", label: "Charon — ענייני" },
+  { id: "Fenrir", label: "Fenrir — נלהב" },
+  { id: "Leda", label: "Leda — צעיר" },
+  { id: "Orus", label: "Orus — יציב" },
+  { id: "Aoede", label: "Aoede — קליל" },
+  { id: "Callirrhoe", label: "Callirrhoe — רגוע" },
+  { id: "Enceladus", label: "Enceladus — נושם" },
+  { id: "Iapetus", label: "Iapetus — ברור" },
+  { id: "Umbriel", label: "Umbriel — רגוע" },
+  { id: "Algieba", label: "Algieba — חלק" },
+  { id: "Despina", label: "Despina — חלק" },
+  { id: "Erinome", label: "Erinome — ברור" },
+  { id: "Algenib", label: "Algenib — מחוספס" },
+  { id: "Rasalgethi", label: "Rasalgethi — מלומד" },
+  { id: "Laomedeia", label: "Laomedeia — קליל" },
+  { id: "Achernar", label: "Achernar — רך" },
+  { id: "Alnilam", label: "Alnilam — יציב" },
+  { id: "Schedar", label: "Schedar — שווה" },
+  { id: "Gacrux", label: "Gacrux — בוגר" },
+  { id: "Pulcherrima", label: "Pulcherrima — ישיר" },
+  { id: "Achird", label: "Achird — ידידותי" },
+  { id: "Zubenelgenubi", label: "Zubenelgenubi — יומיומי" },
+  { id: "Vindemiatrix", label: "Vindemiatrix — עדין" },
+  { id: "Sadachbia", label: "Sadachbia — תוסס" },
+  { id: "Sadaltager", label: "Sadaltager — בקיא" },
+  { id: "Sulafat", label: "Sulafat — חם" },
+];
+export const TTS_VERSION = "v2"; // משתנה כשאופן היצירה משתנה — כדי לא להגיש שמע ישן ושגוי
 
-/** טקסט → PCM 16 ביט מונו 24kHz (ב-Buffer). */
+/** טקסט → PCM 16 ביט מונו 24kHz (ב-Buffer). נשלח הטקסט בלבד — כל מילה נוספת תוקרא. */
 export async function tts(text: string, lang: string, voice = VOICE): Promise<Buffer> {
+  void lang; // Gemini מזהה את השפה לבד
   const parts = splitForTts(text);
   if (MOCK) {
     const secs = Math.max(2, Math.min(12, text.length / 150));
@@ -87,7 +117,7 @@ export async function tts(text: string, lang: string, voice = VOICE): Promise<Bu
   for (const part of parts) {
     const res = await ai().models.generateContent({
       model: MODELS.tts,
-      contents: (STYLE[lang] ?? STYLE.en) + part,
+      contents: part,
       config: {
         responseModalities: ["AUDIO"],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },

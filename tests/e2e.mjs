@@ -35,7 +35,9 @@ log("book page:", title);
 const pill = await page.textContent(".pill");
 log("pill:", pill);
 
-// 3. השמעה
+// 3. השמעה (מדליקים מצב לימוד כדי לבדוק גם את ההסבר)
+await page.click("text=מצב לימוד: כבוי");
+await page.waitForSelector("text=מצב לימוד: פועל");
 await page.click(".bigPlay");
 await page.waitForFunction(() => {
   const a = document.querySelector("audio");

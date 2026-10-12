@@ -3,7 +3,7 @@
 import crypto from "crypto";
 import * as store from "./storage";
 import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
-import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio } from "./gemini";
+import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { buildSections, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
@@ -50,9 +50,9 @@ export interface Progress {
 const P = {
   book: (id: string) => `books/${id}/book.json`,
   he: (id: string, i: number) => `books/${id}/he/${i}.txt`,
-  audio: (id: string, i: number, lang: string, voice: string) => `books/${id}/audio/${lang}/${voice}/${i}.mp3`,
+  audio: (id: string, i: number, lang: string, voice: string) => `books/${id}/audio/${lang}/${voice}-${TTS_VERSION}/${i}.mp3`,
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
-  explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}/${i}.mp3`,
+  explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
   answer: (id: string, i: number, hash: string) => `books/${id}/answers/${i}/${hash}.mp3`,
 };
@@ -363,7 +363,7 @@ export async function answerQuestion(book: Book, i: number, audio: Buffer, mimeT
 // ---------- התקדמות ----------
 
 export async function getProgress(id: string): Promise<Progress> {
-  return (await store.readJSON<Progress>(P.progress(id))) ?? { section: 0, offset: 0, lang: "he", study: true, updatedAt: "" };
+  return (await store.readJSON<Progress>(P.progress(id))) ?? { section: 0, offset: 0, lang: "he", study: false, updatedAt: "" };
 }
 
 export async function setProgress(id: string, p: Partial<Progress>) {
