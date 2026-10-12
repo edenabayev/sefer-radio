@@ -10,7 +10,7 @@ export async function GET(_req: Request) {
     const models = await listModels();
     const want = [MODELS.text, MODELS.tts, MODELS.pdf];
     const missing = MOCK ? [] : want.filter((m) => !models.some((n) => n.endsWith("/" + m) || n === m));
-    return ok({ mock: MOCK, storage: storageMode, models: MODELS, voice: VOICE, missing, available: models.filter((n) => /tts|flash|pro/i.test(n)) });
+    return ok({ mock: MOCK, storage: storageMode, blobTokenPresent: !!process.env.BLOB_READ_WRITE_TOKEN, passwordSet: !!process.env.APP_PASSWORD, models: MODELS, voice: VOICE, missing, available: models.filter((n) => /tts|flash|pro/i.test(n)) });
   } catch (e) {
     return fail(e);
   }
