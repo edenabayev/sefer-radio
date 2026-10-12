@@ -88,7 +88,10 @@ export async function buildCatalog(): Promise<{ count: number }> {
     const gid = Number(row[iId]);
     if (!gid) continue;
     const title = row[iTitle].replace(/\s+/g, " ").trim();
-    const author = row[iAuth].split(";")[0].replace(/,\s*\d{4}.*$/, "").trim(); // "Austen, Jane, 1775-1817" → "Austen, Jane"
+    const author = row[iAuth]
+      .split(";")[0]
+      .replace(/,\s*-?\d{1,4}\??\s*-.*$/, "") // "Austen, Jane, 1775-1817" → "Austen, Jane"; "Marcus Aurelius, Emperor of Rome, 121-180"
+      .trim();
     entries.push({ gid, title, author, lang: lang.slice(0, 2) });
   }
   await store.writeJSON(CATALOG_PATH, entries);

@@ -62,11 +62,17 @@ export default function Player({ id }: { id: string }) {
         setBook(b);
         setProg(p);
         const lang = b.lang === "he" ? "he" : p.lang;
-        setCur({ kind: "section", i: Math.min(p.section, Math.max(0, b.sections.length - 1)), lang });
+        const first: Item = { kind: "section", i: Math.min(p.section, Math.max(0, b.sections.length - 1)), lang };
+        setCur(first);
+        // מכינים את הקטע הנוכחי ואת הבאים כבר עכשיו — כדי שלחיצה על "נגן" תתחיל מיד
+        if (b.sections.length) {
+          fetchItem(first).then(() => prefetch(first)).catch(() => {});
+        }
       } catch (e) {
         setErr((e as Error).message);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   // ---- קריאת PDF בצעדים (רק לספרים שעוד לא נקראו עד הסוף) ----
