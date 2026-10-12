@@ -5,7 +5,7 @@ import * as store from "./storage";
 import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
-import { buildSections, cleanSourceText, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
+import { buildSections, cleanSourceText, cleanSourceParagraphs, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
 export interface Extraction {
   status: "pending" | "done" | "error";
@@ -223,6 +223,7 @@ export async function createFromUpload(url: string, filename: string, pathname?:
   }
   if (kind === "epub") {
     const e = await epubToParagraphs(data);
+    e.paragraphs = cleanSourceParagraphs(e.paragraphs);
     const { chapters, sections } = buildSections(e.paragraphs);
     const book: Book = { ...base, title: meta?.title || e.title || base.title, author: meta?.author || e.author, lang: detectLang(e.paragraphs.join("\n")), chapters, sections };
     await saveBook(book);
@@ -255,7 +256,7 @@ export async function rebuildBook(id: string): Promise<Book> {
     book.lang = detectLang(text);
   } else {
     const e = await epubToParagraphs(data);
-    const b = buildSections(e.paragraphs);
+    const b = buildSections(cleanSourceParagraphs(e.paragraphs));
     book.chapters = b.chapters;
     book.sections = b.sections;
   }

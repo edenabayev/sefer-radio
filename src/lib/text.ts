@@ -19,6 +19,13 @@ export function cleanSourceText(text: string): string {
   return [...head, ...lines.slice(25)].join("\n");
 }
 
+const HEADER_RE = /benyehuda\.org|פרויקט בן.יהודה|מעודכן לתאריך|^\s*https?:\/\/\S+\s*$/;
+
+/** אותו ניקוי לפסקאות (EPUB של בן־יהודה מכניס את שורות המידע לעמוד הראשון). */
+export function cleanSourceParagraphs(paras: string[]): string[] {
+  return paras.filter((p, k) => !(k < 15 && HEADER_RE.test(p)) && !/^\s*https?:\/\/\S+\s*$/.test(p));
+}
+
 /** מסיר את הכותרת והסיום של פרויקט גוטנברג. */
 export function stripGutenberg(raw: string): string {
   let t = raw.replace(/\r\n/g, "\n");
