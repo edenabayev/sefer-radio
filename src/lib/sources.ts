@@ -70,9 +70,9 @@ export async function searchArchive(q: string): Promise<Hit[]> {
     const year = Number(d.year) || undefined;
     const hasText = formats.some((f) => /DjVuTXT|Text PDF|^Text$/i.test(f));
     if (!hasText) continue;
-    // העלאות של משתמשים (opensource) לספרים אחרי 1929 — לא מקור חוקי לספר מוגן
-    const userUpload = collections.some((c) => /opensource|community/i.test(c));
-    if (userUpload && (!year || year >= 1930)) continue;
+    // רק מה שבטוח נחלת הכלל: פורסם לפני 1930, או אוסף גוטנברג. כל השאר (גם העלאות של משתמשים) — לא.
+    const publicDomain = (year && year < 1930) || collections.some((c) => /^gutenberg$/i.test(c));
+    if (!publicDomain) continue;
     const creator = ([] as string[]).concat((d.creator as string[] | string) ?? [])[0];
     const lang = ([] as string[]).concat((d.language as string[] | string) ?? [])[0];
     hits.push({ source: "archive", id: String(d.identifier), title: String(d.title ?? d.identifier), author: creator, year, lang: lang?.toLowerCase().slice(0, 3), note: "ארכיון האינטרנט" });
