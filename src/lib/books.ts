@@ -107,48 +107,61 @@ export interface GutenbergHit {
   textUrl?: string;
 }
 
+const GUT_UA = "sefer-radio (personal study app; contact: edenabayev@gmail.com)";
+
+function xmlText(block: string, tag: string): string | undefined {
+  const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
+  return m ? m[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").trim() : undefined;
+}
+
+/** חיפוש בקטלוג ה-OPDS הרשמי של גוטנברג (gutendex חסום לשרתים). */
 export async function searchGutenberg(q: string): Promise<GutenbergHit[]> {
-  const r = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(q)}&copyright=false`, { headers: { "User-Agent": "sefer-radio (personal study app)" } });
-  if (!r.ok) throw new Error("gutendex " + r.status);
-  const j = (await r.json()) as { results: Array<{ id: number; title: string; authors: Array<{ name: string }>; languages: string[]; download_count: number; formats: Record<string, string> }> };
-  return j.results.slice(0, 15).map((b) => ({
-    gid: b.id,
-    title: b.title,
-    author: b.authors?.[0]?.name,
-    languages: b.languages,
-    downloads: b.download_count,
-    textUrl: pickTextUrl(b.formats),
-  }));
+  const r = await fetch(`https://www.gutenberg.org/ebooks/search.opds/?query=${encodeURIComponent(q)}`, { headers: { "User-Agent": GUT_UA } });
+  if (!r.ok) throw new Error("gutenberg search " + r.status);
+  const xml = await r.text();
+  const entries = xml.split("<entry>").slice(1);
+  const hits: GutenbergHit[] = [];
+  for (const e of entries) {
+    const idm = e.match(/<id>[^<]*\/ebooks\/(\d+)/) || e.match(/urn:gutenberg:(\d+)/) || e.match(/\/ebooks\/(\d+)\.opds/);
+    if (!idm) continue;
+    const gid = Number(idm[1]);
+    if (hits.some((h) => h.gid === gid)) continue;
+    const title = xmlText(e, "title") || `#${gid}`;
+    // בפיד של גוטנברג שם המחבר יושב ב-<content>, לא ב-<author>
+    const author = xmlText(e, "name") || xmlText(e, "content");
+    const lang = xmlText(e, "dcterms:language") || (e.match(/Language:\s*([A-Za-z]+)/)?.[1] ?? "");
+    const dl = Number(e.match(/Downloads:\s*([\d,]+)/)?.[1]?.replace(/,/g, "") ?? 0);
+    hits.push({ gid, title, author, languages: lang ? [lang.toLowerCase().slice(0, 2)] : [], downloads: dl, textUrl: gutenbergTextUrl(gid) });
+    if (hits.length >= 15) break;
+  }
+  return hits;
 }
 
-function pickTextUrl(formats: Record<string, string>): string | undefined {
-  const keys = Object.keys(formats);
-  const k = keys.find((k) => k.startsWith("text/plain") && k.includes("utf-8")) || keys.find((k) => k.startsWith("text/plain") && !formats[k].endsWith(".zip")) || keys.find((k) => k.startsWith("text/plain"));
-  return k ? formats[k] : undefined;
+function gutenbergTextUrl(gid: number) {
+  return `https://www.gutenberg.org/cache/epub/${gid}/pg${gid}.txt`;
 }
 
-export async function createFromGutenberg(gid: number): Promise<Book> {
+export async function createFromGutenberg(gid: number, hint?: { title?: string; author?: string; lang?: string }): Promise<Book> {
   // אותו ספר שכבר נוצר? לא מייצרים שוב.
-  const existing = (await listBooks()).find((m) => m.id === `g${gid}`);
-  if (existing) return (await getBook(existing.id))!;
+  const existing = await getBook(`g${gid}`);
+  if (existing) return existing;
 
-  const meta = await fetch(`https://gutendex.com/books/${gid}`, { headers: { "User-Agent": "sefer-radio (personal study app)" } });
-  if (!meta.ok) throw new Error("gutendex " + meta.status);
-  const j = (await meta.json()) as { title: string; authors: Array<{ name: string }>; languages: string[]; formats: Record<string, string> };
-  let url = pickTextUrl(j.formats);
-  if (!url) throw new Error("לספר הזה אין גרסת טקסט פשוט בגוטנברג");
-  url = url.replace(/^http:/, "https:");
-  const r = await fetch(url, { headers: { "User-Agent": "sefer-radio (personal study app)" } });
-  if (!r.ok) throw new Error("gutenberg " + r.status);
+  const r = await fetch(gutenbergTextUrl(gid), { headers: { "User-Agent": GUT_UA } });
+  if (!r.ok) throw new Error("gutenberg " + r.status + " — לספר הזה אין גרסת טקסט פשוט");
   const raw = await r.text();
+  const header = raw.slice(0, 4000);
+  const title = hint?.title || header.match(/^Title:\s*(.+)$/m)?.[1]?.trim() || `Gutenberg #${gid}`;
+  const author = hint?.author || header.match(/^Author:\s*(.+)$/m)?.[1]?.trim();
+  const langHeader = header.match(/^Language:\s*(.+)$/m)?.[1]?.trim().toLowerCase();
   const text = stripGutenberg(raw);
   const paras = toParagraphs(text);
   const { chapters, sections } = buildSections(paras);
+  const langGuess = hint?.lang || (langHeader?.startsWith("hebrew") ? "he" : langHeader?.startsWith("english") ? "en" : "");
   const book: Book = {
     id: `g${gid}`,
-    title: j.title,
-    author: j.authors?.[0]?.name,
-    lang: (j.languages?.[0] === "he" ? "he" : j.languages?.[0] === "en" ? "en" : detectLang(text)) as Lang,
+    title,
+    author,
+    lang: (langGuess === "he" ? "he" : langGuess === "en" ? "en" : detectLang(text)) as Lang,
     source: { type: "gutenberg", gid },
     createdAt: new Date().toISOString(),
     chapters,

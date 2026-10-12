@@ -55,7 +55,7 @@ export default function Library() {
     setErr("");
     setBusy("add" + h.gid);
     try {
-      const b = await api<BookMeta>("/api/books/from-gutenberg", { method: "POST", body: JSON.stringify({ gid: h.gid }) });
+      const b = await api<BookMeta>("/api/books/from-gutenberg", { method: "POST", body: JSON.stringify({ gid: h.gid, title: h.title, author: h.author, lang: h.languages[0] }) });
       router.push(`/book/${b.id}`);
     } catch (e) {
       setErr((e as Error).message);
@@ -174,7 +174,9 @@ export default function Library() {
               <div className="grow">
                 <div dir="auto">{h.title}</div>
                 <div className="muted" dir="auto">
-                  {h.author} · {h.languages.join(", ")} · {h.downloads.toLocaleString()} הורדות
+                  {h.author}
+                  {h.languages.length ? ` · ${h.languages.join(", ")}` : ""}
+                  {h.downloads ? ` · ${h.downloads.toLocaleString()} הורדות` : ""}
                 </div>
               </div>
               <button className="primary" onClick={() => addGutenberg(h)} disabled={!!busy || !h.textUrl}>
