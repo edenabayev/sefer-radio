@@ -55,7 +55,10 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   const readySet = new Set(ready);
   const todo: number[] = [];
   for (let i = range[0]; i <= range[1]; i++) if (!readySet.has(i)) todo.push(i);
-  if (!todo.length || book.lang === "other") return { ready, range, total: book.sections.length, busy: false, generated: 0 };
+  if (!todo.length || book.lang === "other") {
+    await mergeHeMap(book, ready);
+    return { ready, range, total: book.sections.length, busy: false, generated: 0 };
+  }
 
   // נעילה: אם מישהו אחר מכין עכשיו — לא מתחילים במקביל
   const lock = await store.readJSON<{ until: string }>(P.lock(id));
@@ -91,7 +94,10 @@ export async function readHeMap(book: Book): Promise<Record<number, string>> {
 async function mergeHeMap(book: Book, ready: number[]) {
   if (book.lang === "he") return;
   const map = (await store.readJSON<Record<number, string>>(P.heMap(book.id))) ?? {};
-  const missing = ready.filter((i) => !map[i]).slice(0, 80);
+  // קודם מה שמוכן לשמע, אחר כך כל השאר (תרגומים שנוצרו בעבר בקול אחר) — עד 120 בכל סיבוב
+  const readySet = new Set(ready);
+  const rest = book.sections.map((s) => s.i).filter((i) => !readySet.has(i));
+  const missing = [...ready, ...rest].filter((i) => !map[i]).slice(0, 120);
   if (!missing.length) return;
   const texts = await Promise.all(missing.map((i) => store.readText(`books/${book.id}/he/${i}.txt`)));
   missing.forEach((i, k) => {

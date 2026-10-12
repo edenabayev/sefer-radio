@@ -151,8 +151,10 @@ export default function Player({ id }: { id: string }) {
       }
     })();
     prepTimer.current = window.setInterval(runPrepare, 75_000);
+    const poll = window.setInterval(() => refreshText().catch(() => {}), 20_000);
     return () => {
       if (prepTimer.current) window.clearInterval(prepTimer.current);
+      window.clearInterval(poll);
       liveHandle.current?.stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
