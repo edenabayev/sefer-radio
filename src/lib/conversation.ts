@@ -22,7 +22,7 @@ export interface Turn {
 }
 
 const P = {
-  notes: (id: string) => `books/${id}/notes.json`,
+  notesDir: (id: string) => `books/${id}/notes/`,
 };
 
 const bookLabel = (book: Book) => `"${book.title}"${book.author ? ` מאת ${book.author}` : ""}`;
@@ -140,24 +140,28 @@ export async function deepAnswer(book: Book, section: number, question: string, 
 }
 
 // ---------- פתקים ----------
+// כל פתק בקובץ משלו (לא רשימה אחת): ב-Blob קריאה מיד אחרי כתיבה של אותו קובץ עלולה להחזיר גרסה ישנה,
+// ורשימה אחת שנכתבת מחדש הייתה מאבדת פתק שנשמר רגע קודם.
+
+const notePath = (bookId: string, at: string, id: string) => `${P.notesDir(bookId)}${at.replace(/[^0-9]/g, "")}-${id}.json`;
 
 export async function listNotes(bookId: string): Promise<Note[]> {
-  return (await store.readJSON<Note[]>(P.notes(bookId))) ?? [];
+  const paths = (await store.listPaths(P.notesDir(bookId))).filter((p) => p.endsWith(".json"));
+  const notes = (await Promise.all(paths.map((p) => store.readJSON<Note>(p)))).filter((n): n is Note => !!n && !!n.id);
+  return notes.sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0));
 }
 
 export async function addNote(book: Book, n: Omit<Note, "id" | "at" | "chapter">): Promise<Note> {
   const sec = book.sections[Math.min(n.section, book.sections.length - 1)];
   const chapter = sec ? book.chapters[sec.chapter]?.title ?? "" : "";
   const note: Note = { id: crypto.randomBytes(5).toString("hex"), at: new Date().toISOString(), chapter, ...n };
-  const notes = await listNotes(book.id);
-  notes.unshift(note);
-  await store.writeJSON(P.notes(book.id), notes);
+  await store.writeJSON(notePath(book.id, note.at, note.id), note);
   return note;
 }
 
 export async function deleteNote(bookId: string, noteId: string): Promise<void> {
-  const notes = await listNotes(bookId);
-  await store.writeJSON(P.notes(bookId), notes.filter((n) => n.id !== noteId));
+  const paths = (await store.listPaths(P.notesDir(bookId))).filter((p) => p.endsWith(`-${noteId}.json`));
+  await Promise.all(paths.map((p) => store.remove(p)));
 }
 
 /** סיכום אוטומטי של שיחה (בסוף השיחה) — נשמר כפתק. מחזיר null אם לא היה על מה לסכם. */
