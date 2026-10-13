@@ -3,7 +3,7 @@
 import crypto from "crypto";
 import * as store from "./storage";
 import { getBook, saveBook, type Book } from "./books";
-import { genDeep, createLiveToken, VOICE, type LiveTool } from "./gemini";
+import { genDeep, genText, createLiveToken, VOICE, type LiveTool } from "./gemini";
 import { heTexts } from "./prepare";
 
 export interface Note {
@@ -170,7 +170,8 @@ export async function summarizeConversation(book: Book, section: number, transcr
     "כותרת של 3-7 מילים; וגוף של 80-200 מילים עם: הנושאים שעלו, הרעיונות או הניסוחים שהמאזין הגיע אליהם, תובנות של בן השיחה ששווה לזכור, ושאלות שנשארו פתוחות. " +
     "כתוב בגוף שני ('דיברת על…'), בלי להמציא דברים שלא נאמרו.\n\n" +
     `השיחה:\n${transcriptText(transcript)}\n\nהפתק:`;
-  const raw = (await genDeep(prompt, sys, 2048)).replace(/[*#_`]+/g, "").trim();
+  // סיכום זה עבודה פשוטה — Flash עושה אותה יציב וזול (Pro החזיר ספירת מילים במקום טקסט)
+  const raw = (await genText(prompt, sys, 2048)).replace(/[*#_`]+/g, "").replace(/\(\d{1,3}\)\s?/g, "").trim();
   const lines = raw.split("\n").map((l) => l.trim());
   const firstIdx = lines.findIndex((l) => l.length > 0);
   let title = "סיכום שיחה";
