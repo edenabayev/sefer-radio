@@ -46,7 +46,7 @@ export async function genText(prompt: string, system?: string, maxOutputTokens =
 }
 
 /** המוח הגדול: מודל Pro עם חשיבה גבוהה. אם הוא לא זמין — Flash עם חשיבה גבוהה. */
-export async function genDeep(prompt: string, system?: string, maxOutputTokens = 8192): Promise<string> {
+export async function genDeep(prompt: string, system?: string, maxOutputTokens = 8192, level: "HIGH" | "MEDIUM" = "HIGH"): Promise<string> {
   if (MOCK) return `[דמה-עומק] ${prompt.slice(0, 200)}`;
   const run = async (model: string, level: "HIGH" | "MEDIUM") => {
     const res = await ai().models.generateContent({
@@ -59,11 +59,11 @@ export async function genDeep(prompt: string, system?: string, maxOutputTokens =
     return text;
   };
   try {
-    return await run(MODELS.deep, "HIGH");
+    return await run(MODELS.deep, level);
   } catch (e) {
     console.warn("deep model failed, falling back to text model:", (e as Error).message);
     try {
-      return await run(MODELS.text, "HIGH");
+      return await run(MODELS.text, level);
     } catch {
       return genText(prompt, system, maxOutputTokens);
     }
