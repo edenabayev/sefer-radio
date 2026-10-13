@@ -124,9 +124,55 @@ export const VOICES: { id: string; label: string }[] = [
   { id: "Sadaltager", label: "Sadaltager — בקיא" },
   { id: "Sulafat", label: "Sulafat — חם" },
 ];
-export const TTS_VERSION = "v2"; // משתנה כשאופן היצירה משתנה — כדי לא להגיש שמע ישן ושגוי
+export const TTS_VERSION = "v3"; // משתנה כשאופן היצירה משתנה — כדי לא להגיש שמע ישן ושגוי
 
 /** טקסט → PCM 16 ביט מונו 24kHz (ב-Buffer). נשלח הטקסט בלבד — כל מילה נוספת תוקרא. */
+/** Gemini מחזיר קובץ WAV שלם (RIFF). לוקחים רק את חלק הצליל, ומתאימים ל-24kHz אם צריך. */
+export function wavToPcm(buf: Buffer, targetRate = SAMPLE_RATE): Buffer {
+  if (buf.length < 12 || buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") return buf; // לא WAV — שמע גולמי
+  let pos = 12;
+  let rate = targetRate;
+  let channels = 1;
+  let bits = 16;
+  let data: Buffer | null = null;
+  while (pos + 8 <= buf.length) {
+    const id = buf.toString("ascii", pos, pos + 4);
+    const size = buf.readUInt32LE(pos + 4);
+    const start = pos + 8;
+    if (id === "fmt ") {
+      channels = buf.readUInt16LE(start + 2);
+      rate = buf.readUInt32LE(start + 4);
+      bits = buf.readUInt16LE(start + 14);
+    } else if (id === "data") {
+      data = buf.subarray(start, Math.min(buf.length, start + size));
+      break;
+    }
+    pos = start + size + (size % 2);
+  }
+  if (!data) return buf;
+  if (bits !== 16) throw new Error("WAV לא נתמך: " + bits + " ביט");
+  // לערוץ אחד
+  if (channels > 1) {
+    const frames = Math.floor(data.length / (2 * channels));
+    const mono = Buffer.alloc(frames * 2);
+    for (let i = 0; i < frames; i++) mono.writeInt16LE(data.readInt16LE(i * 2 * channels), i * 2);
+    data = mono;
+  }
+  if (rate === targetRate) return Buffer.from(data);
+  // התאמת קצב דגימה פשוטה (ליניארית)
+  const n = Math.floor(data.length / 2);
+  const outN = Math.floor((n * targetRate) / rate);
+  const out = Buffer.alloc(outN * 2);
+  for (let i = 0; i < outN; i++) {
+    const x = (i * rate) / targetRate;
+    const k = Math.floor(x);
+    const a = data.readInt16LE(Math.min(k, n - 1) * 2);
+    const b = data.readInt16LE(Math.min(k + 1, n - 1) * 2);
+    out.writeInt16LE(Math.round(a + (b - a) * (x - k)), i * 2);
+  }
+  return out;
+}
+
 async function ttsChunk(part: string, voice: string): Promise<Buffer> {
   const res = await ai().models.generateContent({
     model: MODELS.tts,
@@ -136,9 +182,9 @@ async function ttsChunk(part: string, voice: string): Promise<Buffer> {
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
     },
   });
-  const data = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData;
-  if (!data?.data) throw new Error("Gemini TTS לא החזיר שמע (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
-  return Buffer.from(data.data, "base64");
+  const parts = (res.candidates?.[0]?.content?.parts ?? []).filter((p) => p.inlineData?.data);
+  if (!parts.length) throw new Error("Gemini TTS לא החזיר שמע (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
+  return Buffer.concat(parts.map((p) => wavToPcm(Buffer.from(p.inlineData!.data!, "base64"))));
 }
 
 export async function tts(text: string, lang: string, voice = VOICE): Promise<Buffer> {
