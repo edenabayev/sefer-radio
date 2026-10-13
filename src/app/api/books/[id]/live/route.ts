@@ -1,6 +1,6 @@
 import { ok, fail, authorized } from "@/lib/api";
 import { getBook, getProgress } from "@/lib/books";
-import { liveSession } from "@/lib/prepare";
+import { liveSession } from "@/lib/conversation";
 import { VOICE } from "@/lib/gemini";
 
 export const dynamic = "force-dynamic";

@@ -2,7 +2,7 @@
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
 import { getBook, getProgress, ensureAudio, ensureTranslation, type Book } from "./books";
-import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION, createLiveToken } from "./gemini";
+import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 
 export const CHAPTERS_AHEAD = 2;
@@ -55,6 +55,11 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   const readySet = new Set(ready);
   const todo: number[] = [];
   for (let i = range[0]; i <= range[1]; i++) if (!readySet.has(i)) todo.push(i);
+  if (!book.background && book.lang !== "other") {
+    // כרטיס רקע לשיחה — פעם אחת לספר, כדי שהשיחה הראשונה לא תחכה לו
+    const { ensureBackground } = await import("./conversation");
+    await ensureBackground(book).catch((e) => console.warn("background:", (e as Error).message));
+  }
   if (!todo.length || book.lang === "other") {
     await mergeHeMap(book, ready);
     return { ready, range, total: book.sections.length, busy: false, generated: 0 };
@@ -176,26 +181,4 @@ export async function voicePreview(book: Book, voice: string): Promise<string> {
   const text = (book.lang === "he" ? book.sections[i].text : await ensureTranslation(book, i)).slice(0, 420);
   const pcm = await tts(text, "he", voice);
   return store.writeBytes(p, await pcm16ToMp3(pcm, SAMPLE_RATE), "audio/mpeg");
-}
-
-/** שיחה חיה: הוראות + הטקסט שנשמע עד עכשיו (בלי ספוילרים). */
-export async function liveSession(book: Book, section: number, voice = VOICE) {
-  const sec = book.sections[Math.min(section, book.sections.length - 1)];
-  const ch = sec ? book.chapters[sec.chapter] : undefined;
-  const from = ch ? ch.start : 0;
-  const idx = Array.from({ length: Math.max(0, section - from + 1) }, (_, k) => from + k);
-  const he = await heTexts(book, idx);
-  let body = idx.map((i) => he[i] ?? book.sections[i]?.text ?? "").join("\n\n");
-  if (body.length > 28000) body = "…" + body.slice(-28000);
-  const current = he[section] ?? sec?.text ?? "";
-  const system =
-    `אתה מורה שמלווה מאזין שנוהג ברכב ושומע את הספר "${book.title}"${book.author ? ` מאת ${book.author}` : ""}. ` +
-    `${book.summary ? "על הספר: " + book.summary + " " : ""}` +
-    "דבר עברית מדוברת, חמה וקצרה — שתיים-ארבע משפטים לתשובה, כי הוא נוהג. בלי רשימות, בלי ניקוד. " +
-    "ענה רק מתוך מה שהמאזין כבר שמע (הטקסט למטה). אם משהו לא מופיע בו, אמור בפשטות שזה לא בקטעים ששמע, ואל תמציא. אל תגלה מה קורה בהמשך הספר. " +
-    "אם הוא מבקש 'תסביר שוב' או 'מה זה אומר' — הסבר את הקטע האחרון במילים אחרות עם דוגמה מהחיים. " +
-    "כשהוא אומר שסיים, היפרד במשפט אחד.\n\n" +
-    `הקטע שנשמע ממש עכשיו:\n${current}\n\n` +
-    `כל מה שנשמע בפרק "${ch?.title ?? ""}" עד עכשיו:\n${body}`;
-  return createLiveToken(system, voice);
 }

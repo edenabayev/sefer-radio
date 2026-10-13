@@ -9,10 +9,14 @@ export interface LiveHandlers {
   onState: (s: LiveState) => void;
   onTranscript: (role: "user" | "model", text: string, final: boolean) => void;
   onError: (msg: string) => void;
+  /** המודל ביקש להפעיל כלי (deep_think / save_note). מחזירים לו את התוצאה. */
+  onToolCall?: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 export interface LiveHandle {
   stop: () => void;
+  /** טקסט לתוך ההקשר של השיחה (הודעת מערכת / לחיצה על כפתור). respond=true מבקש מהמודל לענות עליו מיד. */
+  sendText: (text: string, respond?: boolean) => void;
 }
 
 const WORKLET = `
@@ -103,6 +107,25 @@ export async function startLive(token: string, model: string, h: LiveHandlers): 
     callbacks: {
       onopen: () => h.onState("listening"),
       onmessage: (m: LiveServerMessage) => {
+        if (m.toolCall?.functionCalls?.length) {
+          h.onState("thinking");
+          const calls = m.toolCall.functionCalls;
+          void (async () => {
+            const functionResponses = [];
+            for (const c of calls) {
+              let response: Record<string, unknown> = { ok: false, error: "no handler" };
+              try {
+                response = h.onToolCall ? await h.onToolCall(c.name ?? "", (c.args ?? {}) as Record<string, unknown>) : response;
+              } catch (e) {
+                response = { ok: false, error: (e as Error).message };
+              }
+              functionResponses.push({ id: c.id, name: c.name, response });
+            }
+            if (!closed && session) session.sendToolResponse({ functionResponses });
+            if (!closed && !speakingNow()) h.onState("listening");
+          })();
+          return;
+        }
         const sc = m.serverContent;
         if (!sc) return;
         if (sc.interrupted) flushPlayback();
@@ -165,6 +188,10 @@ export async function startLive(token: string, model: string, h: LiveHandlers): 
   sink.connect(micCtx.destination);
 
   return {
+    sendText: (text, respond = false) => {
+      if (closed || !session) return;
+      session.sendClientContent({ turns: [{ role: "user", parts: [{ text }] }], turnComplete: respond });
+    },
     stop: () => {
       closed = true;
       flushPlayback();

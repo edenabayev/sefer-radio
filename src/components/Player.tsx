@@ -3,14 +3,14 @@
 // נגן קבוע למטה, בחירת קול ומהירות, מצב לימוד שקט (תקציר בחזרה, שאלה בסוף פרק), ושיחה חיה.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { api, type AudioResult, type BookFull, type Progress } from "@/lib/client";
+import { api, type AudioResult, type BookFull, type Note, type Progress } from "@/lib/client";
 import { startLive, type LiveHandle, type LiveState } from "@/lib/live";
 
 interface Voice {
   id: string;
   label: string;
 }
-type Sheet = null | "chapters" | "voice" | "aa" | "more" | "sleep";
+type Sheet = null | "chapters" | "voice" | "aa" | "more" | "sleep" | "notes";
 type Theme = "light" | "sepia" | "dark";
 const RATES = [1, 1.25, 1.5, 1.75, 2, 0.8];
 const RECAP_AFTER_MS = 6 * 3600 * 1000;
@@ -44,6 +44,10 @@ export default function Player({ id }: { id: string }) {
   const [sleepAt, setSleepAt] = useState<number | "chapter" | null>(null);
   const [live, setLiveState] = useState<LiveState | null>(null);
   const [transcript, setTranscript] = useState<{ role: "user" | "model"; text: string }[]>([]);
+  const [deep, setDeep] = useState(false); // "לחשוב לעומק": השאלות עוברות למוח הגדול
+  const [liveBusy, setLiveBusy] = useState<"deep" | "note" | null>(null);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [toast, setToast] = useState("");
   const [previewing, setPreviewing] = useState("");
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -61,6 +65,7 @@ export default function Player({ id }: { id: string }) {
   const pausedAt = useRef(0);
   const liveHandle = useRef<LiveHandle | null>(null);
   const liveResume = useRef(false);
+  const transcriptRef = useRef<{ role: "user" | "model"; text: string }[]>([]);
   const saveTimer = useRef<number | null>(null);
   const prepTimer = useRef<number | null>(null);
   const prepBusy = useRef(false);
@@ -72,6 +77,12 @@ export default function Player({ id }: { id: string }) {
   useEffect(() => void (voiceRef.current = voice), [voice]);
   useEffect(() => void (progRef.current = prog), [prog]);
   useEffect(() => void (readyRef.current = ready), [ready]);
+  useEffect(() => void (transcriptRef.current = transcript), [transcript]);
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(""), 3500);
+    return () => window.clearTimeout(t);
+  }, [toast]);
 
   // ---- העדפות תצוגה (בטלפון הזה בלבד) ----
   useEffect(() => {
@@ -133,6 +144,7 @@ export default function Player({ id }: { id: string }) {
         setBook(b);
         setProg(p);
         setVoices(v.voices);
+        api<{ notes: Note[] }>(`/api/books/${id}/notes`).then((n) => setNotes(n.notes)).catch(() => {});
         const vv = p.voice || v.default;
         setVoice(vv);
         voiceRef.current = vv;
@@ -527,6 +539,9 @@ export default function Player({ id }: { id: string }) {
     liveResume.current = !a.paused;
     a.pause();
     setTranscript([]);
+    transcriptRef.current = [];
+    setDeep(false);
+    setLiveBusy(null);
     setLiveState("connecting");
     try {
       const t = await api<{ token: string; model: string }>(`/api/books/${id}/live`, { method: "POST", body: JSON.stringify({ section: curRef.current }) });
@@ -539,16 +554,95 @@ export default function Player({ id }: { id: string }) {
             return [...tr, { role, text }];
           }),
         onError: (m) => setErr(m),
+        onToolCall: async (name, args) => {
+          if (name === "deep_think") {
+            setLiveBusy("deep");
+            try {
+              const r = await api<{ answer: string }>(`/api/books/${id}/deep`, {
+                method: "POST",
+                body: JSON.stringify({ section: curRef.current, question: String(args.question ?? ""), transcript: transcriptRef.current.slice(-20) }),
+              });
+              return { answer: r.answer };
+            } finally {
+              setLiveBusy(null);
+            }
+          }
+          if (name === "save_note") {
+            setLiveBusy("note");
+            try {
+              const r = await api<{ note: Note }>(`/api/books/${id}/notes`, {
+                method: "POST",
+                body: JSON.stringify({ section: curRef.current, title: String(args.title ?? ""), text: String(args.text ?? "") }),
+              });
+              setNotes((n) => [r.note, ...n]);
+              setToast("הפתק נשמר");
+              return { ok: true, saved: true };
+            } finally {
+              setLiveBusy(null);
+            }
+          }
+          return { ok: false, error: "unknown tool" };
+        },
       });
     } catch (e) {
       setLiveState(null);
       setErr("השיחה לא התחילה: " + (e as Error).message);
     }
   }
+  function toggleDeep() {
+    const next = !deep;
+    setDeep(next);
+    liveHandle.current?.sendText(
+      next
+        ? "[הודעת מערכת] מצב 'לחשוב לעומק' הופעל. מעכשיו, על כל שאלה או טענה של המאזין קרא ל-deep_think והקרא את התשובה כפי שהיא. אל תענה בעצמך. אל תגיב להודעה הזו."
+        : "[הודעת מערכת] מצב 'לחשוב לעומק' כובה. מעכשיו ענה בעצמך כרגיל. אל תגיב להודעה הזו.",
+      false,
+    );
+  }
+  function requestNote() {
+    liveHandle.current?.sendText("[המאזין לחץ על כפתור הפתק] קרא עכשיו ל-save_note עם תמצית מה שדיברנו עליו לאחרונה, ואז אמור משפט אחד שהפתק נשמר.", true);
+  }
+  async function removeNote(noteId: string) {
+    setNotes((n) => n.filter((x) => x.id !== noteId));
+    await api(`/api/books/${id}/notes?note=${noteId}`, { method: "DELETE" }).catch(() => {});
+  }
+  function notesAsText() {
+    return notes
+      .slice()
+      .reverse()
+      .map((n) => `${n.title}\n(${n.chapter || "—"} · ${new Date(n.at).toLocaleDateString("he-IL")})\n${n.text}`)
+      .join("\n\n---\n\n");
+  }
+  async function shareNotes() {
+    const text = `פתקים — ${book?.title ?? ""}\n\n${notesAsText()}`;
+    try {
+      if (navigator.share) await navigator.share({ title: `פתקים — ${book?.title ?? ""}`, text });
+      else {
+        await navigator.clipboard.writeText(text);
+        setToast("הפתקים הועתקו");
+      }
+    } catch {
+      /* ביטול */
+    }
+  }
   function endConversation() {
     liveHandle.current?.stop();
     liveHandle.current = null;
     setLiveState(null);
+    setDeep(false);
+    // סיכום אוטומטי של השיחה — פתק, ברקע
+    const tr = transcriptRef.current;
+    if (tr.filter((t) => t.role === "user" && t.text.trim().length > 15).length >= 2) {
+      setToast("כותב פתק סיכום לשיחה…");
+      api<{ note: Note | null }>(`/api/books/${id}/notes`, { method: "POST", body: JSON.stringify({ section: curRef.current, transcript: tr.slice(-60) }) })
+        .then((r) => {
+          if (r.note) {
+            setNotes((n) => [r.note!, ...n]);
+            setToast("נשמר פתק סיכום של השיחה");
+          }
+        })
+        .catch(() => setToast("לא הצלחתי לכתוב פתק סיכום"));
+    }
     const a = audioRef.current;
     if (a && a.src) {
       a.currentTime = Math.max(0, a.currentTime - 5);
@@ -697,6 +791,9 @@ export default function Player({ id }: { id: string }) {
           <button className="chip" onClick={() => setSheet("chapters")}>
             פרקים
           </button>
+          <button className="chip" onClick={() => setSheet("notes")}>
+            📝 פתקים{notes.length ? ` (${notes.length})` : ""}
+          </button>
           <button className="chip" onClick={() => setSheet("more")}>
             ⋯
           </button>
@@ -774,6 +871,29 @@ export default function Player({ id }: { id: string }) {
           </div>
         </div>
       )}
+      {sheet === "notes" && (
+        <div className="sheet">
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="sheetTitle">פתקים</div>
+            {notes.length > 0 && <button className="ghost" onClick={shareNotes}>שתף / העתק</button>}
+          </div>
+          {notes.length === 0 && <p className="muted small">עוד אין פתקים. בשיחה אמור "תשמור את זה" או לחץ על 📝, ובסוף כל שיחה נכתב פתק סיכום אוטומטית.</p>}
+          {notes.map((n) => (
+            <div key={n.id} className="card">
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div className="grow">
+                  <div style={{ fontWeight: 700 }}>{n.title}</div>
+                  <div className="muted small">
+                    {n.kind === "summary" ? "סיכום שיחה" : "פתק"} · {n.chapter || ""} · {new Date(n.at).toLocaleDateString("he-IL")}
+                  </div>
+                </div>
+                <button className="ghost sm" onClick={() => removeNote(n.id)} aria-label="מחק פתק">✕</button>
+              </div>
+              <p style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{n.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
       {sheet === "sleep" && (
         <div className="sheet">
           <div className="sheetTitle">שעון שינה</div>
@@ -790,21 +910,35 @@ export default function Player({ id }: { id: string }) {
       {live && (
         <div className="liveOverlay">
           <div className="liveState">
-            {live === "connecting" && "מתחבר…"}
-            {live === "listening" && "מאזין — דבר"}
-            {live === "thinking" && "חושב…"}
-            {live === "speaking" && "מדבר…"}
-            {live === "error" && "תקלה בחיבור"}
-            {live === "closed" && "השיחה הסתיימה"}
+            {liveBusy === "deep" && "חושב לעומק…"}
+            {liveBusy === "note" && "שומר פתק…"}
+            {!liveBusy && live === "connecting" && "מתחבר…"}
+            {!liveBusy && live === "listening" && "מאזין — דבר"}
+            {!liveBusy && live === "thinking" && "חושב…"}
+            {!liveBusy && live === "speaking" && "מדבר…"}
+            {!liveBusy && live === "error" && "תקלה בחיבור"}
+            {!liveBusy && live === "closed" && "השיחה הסתיימה"}
           </div>
           <div className="transcript">
             {transcript.map((t, k) => (
               <div key={k} className={"line " + t.role}>{t.text}</div>
             ))}
           </div>
+          <div className="row" style={{ gap: 10, marginTop: 12 }}>
+            <button className={"grow liveTool" + (deep ? " on" : "")} onClick={toggleDeep} disabled={live === "connecting"}>
+              🧠 {deep ? "חושב לעומק — פועל" : "לחשוב לעומק"}
+            </button>
+            <button className="grow liveTool" onClick={requestNote} disabled={live === "connecting" || !!liveBusy}>
+              📝 שמור פתק
+            </button>
+          </div>
+          <div className="muted small" style={{ textAlign: "center", marginTop: 6 }}>
+            {deep ? "כל שאלה עוברת למודל הגדול: תשובה עמוקה יותר, כמה שניות המתנה, כ-20 אגורות לשאלה" : "תשובות מהירות מהמודל החי. לחץ 🧠 כשרוצים שהמודל הגדול יחשוב על השאלה"}
+          </div>
           <button className="endLive" onClick={endConversation}>סיים וחזור לספר</button>
         </div>
       )}
+      {toast && <div className="toast">{toast}</div>}
       {audioEl}
     </div>
   );

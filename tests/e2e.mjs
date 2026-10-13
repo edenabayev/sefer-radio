@@ -123,6 +123,23 @@ await page.waitForSelector(".bigPlay");
 await page.waitForTimeout(800);
 await page.screenshot({ path: "tests/out/player.png", fullPage: false });
 
+// פתקים: דרך ה-API (כמו שהשיחה שומרת) ואז בגיליון הפתקים
+const bookId = url.split("/book/")[1];
+const pw = await page.evaluate(() => localStorage.getItem("app_pw") || "");
+const saved = await page.evaluate(async ([id, pw]) => {
+  const r = await fetch(`/api/books/${id}/notes`, { method: "POST", headers: { "content-type": "application/json", "x-app-password": pw }, body: JSON.stringify({ section: 0, title: "פתק בדיקה", text: "החופש הוא אחריות" }) });
+  return (await r.json());
+}, [bookId, pw]);
+if (!saved?.note?.id && !saved?.data?.note?.id) throw new Error("note not saved: " + JSON.stringify(saved));
+await page.reload();
+await page.waitForSelector(".bigPlay");
+await page.click("text=פתקים");
+await page.waitForSelector("text=פתק בדיקה");
+await page.screenshot({ path: "tests/out/notes.png", fullPage: false });
+await page.click('[aria-label="מחק פתק"]');
+await page.waitForFunction(() => !document.body.textContent.includes("פתק בדיקה"));
+log("notes ok");
+
 const real = errors.filter((e) => !/favicon/.test(e));
 if (real.length) {
   console.log("ERRORS:\n" + real.join("\n"));

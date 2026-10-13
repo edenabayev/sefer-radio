@@ -75,3 +75,12 @@ export interface AudioResult {
   lang: string;
   cached: boolean;
 }
+export interface Note {
+  id: string;
+  at: string;
+  section: number;
+  chapter: string;
+  kind: "saved" | "summary";
+  title: string;
+  text: string;
+}

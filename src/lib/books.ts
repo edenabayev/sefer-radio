@@ -29,6 +29,7 @@ export interface Book {
   sections: Section[];
   extraction?: Extraction;
   summary?: string; // תקציר קצר לשימוש המורה
+  background?: string; // כרטיס רקע לשיחה: מחבר, תקופה, רעיונות, התקבלות — נוצר פעם אחת ע"י המוח הגדול
 }
 
 export interface BookMeta {
@@ -80,7 +81,7 @@ export async function getBook(id: string): Promise<Book | null> {
   return store.readJSON<Book>(P.book(id));
 }
 
-async function saveBook(b: Book) {
+export async function saveBook(b: Book) {
   await store.writeJSON(P.book(b.id), b);
 }
 

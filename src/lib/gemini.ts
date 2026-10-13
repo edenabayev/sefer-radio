@@ -11,6 +11,7 @@ export const MODELS = {
   tts: process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-lite-tts",
   pdf: process.env.GEMINI_PDF_MODEL || process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash",
   live: process.env.GEMINI_LIVE_MODEL || "", // נבחר בזמן ריצה מתוך הרשימה למטה
+  deep: process.env.GEMINI_DEEP_MODEL || "gemini-3.1-pro-preview", // "המוח הגדול": שאלות עומק, כרטיס רקע, סיכומי שיחה
 };
 const LIVE_CANDIDATES = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest", "gemini-2.5-flash-native-audio-preview-12-2025"];
 export const VOICE = process.env.GEMINI_VOICE || "Puck"; // מדורג ראשון בעברית בזירת ivrit.ai
@@ -42,6 +43,31 @@ export async function genText(prompt: string, system?: string, maxOutputTokens =
   const text = res.text ?? "";
   if (!text.trim()) throw new Error("Gemini החזיר תשובה ריקה (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
   return text.trim();
+}
+
+/** המוח הגדול: מודל Pro עם חשיבה גבוהה. אם הוא לא זמין — Flash עם חשיבה גבוהה. */
+export async function genDeep(prompt: string, system?: string, maxOutputTokens = 8192): Promise<string> {
+  if (MOCK) return `[דמה-עומק] ${prompt.slice(0, 200)}`;
+  const run = async (model: string, level: "HIGH" | "MEDIUM") => {
+    const res = await ai().models.generateContent({
+      model,
+      contents: prompt,
+      config: { systemInstruction: system, maxOutputTokens, temperature: 0.6, thinkingConfig: { thinkingLevel: level as never } },
+    });
+    const text = (res.text ?? "").trim();
+    if (!text) throw new Error("תשובה ריקה (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
+    return text;
+  };
+  try {
+    return await run(MODELS.deep, "HIGH");
+  } catch (e) {
+    console.warn("deep model failed, falling back to text model:", (e as Error).message);
+    try {
+      return await run(MODELS.text, "HIGH");
+    } catch {
+      return genText(prompt, system, maxOutputTokens);
+    }
+  }
 }
 
 /** מפרק טקסט ארוך לחתיכות שמנוע הקול מקבל בנוחות (לפי משפטים). */
@@ -288,7 +314,13 @@ export async function pickLiveModel(): Promise<string> {
 }
 
 /** מפתח זמני לשיחה חיה מהדפדפן — נעול למודל ולהוראות שנקבעו כאן; המפתח האמיתי נשאר בשרת. */
-export async function createLiveToken(systemInstruction: string, voice = VOICE): Promise<{ token: string; model: string; expiresAt: string }> {
+export interface LiveTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>; // JSON Schema
+}
+
+export async function createLiveToken(systemInstruction: string, voice = VOICE, tools: LiveTool[] = []): Promise<{ token: string; model: string; expiresAt: string }> {
   const model = await pickLiveModel();
   const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
   if (MOCK) return { token: "mock-token", model, expiresAt: expireTime };
@@ -306,6 +338,9 @@ export async function createLiveToken(systemInstruction: string, voice = VOICE):
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
+          ...(tools.length
+            ? { tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parametersJsonSchema: t.parameters })) }] }
+            : {}),
         },
       },
     },
