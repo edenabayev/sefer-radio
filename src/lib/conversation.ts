@@ -164,24 +164,20 @@ export async function deleteNote(bookId: string, noteId: string): Promise<void> 
 export async function summarizeConversation(book: Book, section: number, transcript: Turn[]): Promise<Note | null> {
   const meaningful = transcript.filter((t) => t.text.trim().length > 15);
   if (meaningful.filter((t) => t.role === "user").length < 2) return null;
-  const sys = "כתוב בעברית פשוטה, בלי ניקוד ובלי סימני עיצוב. החזר JSON בלבד בצורה {\"title\": \"...\", \"text\": \"...\"} — בלי טקסט לפני או אחרי.";
+  const sys = "כתוב בעברית פשוטה, בלי ניקוד ובלי סימני עיצוב (בלי כוכביות, בלי סולמיות). השורה הראשונה היא הכותרת בלבד (3-7 מילים), אחריה שורה ריקה, ואחריה גוף הפתק.";
   const prompt =
     `זו שיחה בין מאזין לבן שיחה על הספר ${bookLabel(book)}. כתוב פתק סיכום בשביל המאזין: ` +
     "כותרת של 3-7 מילים; וגוף של 80-200 מילים עם: הנושאים שעלו, הרעיונות או הניסוחים שהמאזין הגיע אליהם, תובנות של בן השיחה ששווה לזכור, ושאלות שנשארו פתוחות. " +
     "כתוב בגוף שני ('דיברת על…'), בלי להמציא דברים שלא נאמרו.\n\n" +
-    `השיחה:\n${transcriptText(transcript)}\n\nהפתק (JSON):`;
-  const raw = await genDeep(prompt, sys, 2048);
-  const m = raw.match(/\{[\s\S]*\}/);
+    `השיחה:\n${transcriptText(transcript)}\n\nהפתק:`;
+  const raw = (await genDeep(prompt, sys, 2048)).replace(/[*#_`]+/g, "").trim();
+  const lines = raw.split("\n").map((l) => l.trim());
+  const firstIdx = lines.findIndex((l) => l.length > 0);
   let title = "סיכום שיחה";
   let text = raw;
-  if (m) {
-    try {
-      const j = JSON.parse(m[0]) as { title?: string; text?: string };
-      if (j.title) title = j.title;
-      if (j.text) text = j.text;
-    } catch {
-      /* נשאיר את הטקסט הגולמי */
-    }
+  if (firstIdx >= 0 && lines[firstIdx].length <= 80) {
+    title = lines[firstIdx].replace(/^כותרת[:\s]*/, "");
+    text = lines.slice(firstIdx + 1).join("\n").trim() || raw;
   }
   return addNote(book, { section, kind: "summary", title, text });
 }
