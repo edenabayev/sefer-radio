@@ -16,20 +16,23 @@ export const KOKORO_VOICES = [
 export const KOKORO_DEFAULT = "am_michael";
 
 type Kokoro = { generate: (text: string, opts: { voice: string; speed?: number }) => Promise<{ audio: Float32Array; sampling_rate: number }> };
-let modelPromise: Promise<Kokoro> | null = null;
+const models = new Map<string, Promise<Kokoro>>();
+export type KokoroDtype = "q8" | "fp32" | "q4" | "fp16" | "q4f16";
 
-async function model(): Promise<Kokoro> {
-  if (!modelPromise) {
-    modelPromise = (async () => {
+async function model(dtype: KokoroDtype = (process.env.KOKORO_DTYPE as KokoroDtype) || "q8"): Promise<Kokoro> {
+  let p = models.get(dtype);
+  if (!p) {
+    p = (async () => {
       const tf = await import("@huggingface/transformers");
       tf.env.cacheDir = process.env.KOKORO_CACHE || "/tmp/hf-cache";
       tf.env.allowLocalModels = false;
       const { KokoroTTS } = await import("kokoro-js");
-      return (await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", { dtype: "q8", device: "cpu" })) as unknown as Kokoro;
+      return (await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", { dtype, device: "cpu" })) as unknown as Kokoro;
     })();
-    modelPromise.catch(() => (modelPromise = null));
+    models.set(dtype, p);
+    p.catch(() => models.delete(dtype));
   }
-  return modelPromise;
+  return p;
 }
 
 /** Float32 ב-24kHz → PCM 16 ביט, כמו ש-Gemini מחזיר — כדי שכל שאר הצינור (MP3, אחסון) יישאר זהה. */
@@ -62,9 +65,9 @@ function chunks(text: string, max = 500): string[] {
   return out;
 }
 
-export async function kokoroTts(text: string, voice = KOKORO_DEFAULT): Promise<{ pcm: Buffer; stats: { loadMs: number; genMs: number; audioSec: number } }> {
+export async function kokoroTts(text: string, voice = KOKORO_DEFAULT, dtype?: KokoroDtype): Promise<{ pcm: Buffer; stats: { loadMs: number; genMs: number; audioSec: number } }> {
   const t0 = Date.now();
-  const m = await model();
+  const m = await model(dtype);
   const loadMs = Date.now() - t0;
   const t1 = Date.now();
   const parts: Buffer[] = [];
