@@ -4,7 +4,7 @@ import { listBooks, getProgress } from "@/lib/books";
 import { prepare } from "@/lib/prepare";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 800; // Kokoro על המעבד: כ-3 דקות לקטע אנגלי
 
 function isCron(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   if (!isCron(req)) return fail("unauthorized", 401);
   try {
     const start = Date.now();
-    const budget = 240_000;
+    const budget = 600_000;
     const books = await listBooks();
     const withProgress = await Promise.all(books.map(async (b) => ({ b, p: await getProgress(b.id) })));
     const dayAgo = Date.now() - 3 * 24 * 3600 * 1000;

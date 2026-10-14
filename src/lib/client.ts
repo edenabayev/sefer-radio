@@ -66,6 +66,7 @@ export interface Progress {
   lang: "he" | "orig";
   study: boolean;
   voice?: string;
+  voiceEn?: string;
   rate?: number;
   updatedAt: string;
 }

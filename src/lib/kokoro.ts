@@ -1,25 +1,15 @@
 // Kokoro-82M: מודל הקראה בקוד פתוח (Apache 2.0) שרץ על המעבד של השרת — בלי ספק חיצוני, בלי מפתח, בלי עלות לפי תו.
 // משמש להקראה באנגלית (המקור). המודל (~90MB) יורד פעם אחת לכל שרת ונשמר ב-/tmp.
-import { SAMPLE_RATE } from "./gemini";
+import { SAMPLE_RATE, MOCK } from "./gemini";
+import { fakePcm } from "./mp3";
 
-export const KOKORO_VOICES = [
-  { id: "am_michael", label: "Michael (אמריקאי)" },
-  { id: "am_fenrir", label: "Fenrir (אמריקאי)" },
-  { id: "am_puck", label: "Puck (אמריקאי)" },
-  { id: "af_heart", label: "Heart (אמריקאית)" },
-  { id: "af_bella", label: "Bella (אמריקאית)" },
-  { id: "af_nicole", label: "Nicole (אמריקאית, לוחשת)" },
-  { id: "bm_george", label: "George (בריטי)" },
-  { id: "bm_lewis", label: "Lewis (בריטי)" },
-  { id: "bf_emma", label: "Emma (בריטית)" },
-];
-export const KOKORO_DEFAULT = "am_michael";
+import { KOKORO_DEFAULT } from "./kokoro-voices";
 
 type Kokoro = { generate: (text: string, opts: { voice: string; speed?: number }) => Promise<{ audio: Float32Array; sampling_rate: number }> };
 const models = new Map<string, Promise<Kokoro>>();
 export type KokoroDtype = "q8" | "fp32" | "q4" | "fp16" | "q4f16";
 
-async function model(dtype: KokoroDtype = (process.env.KOKORO_DTYPE as KokoroDtype) || "q8"): Promise<Kokoro> {
+async function model(dtype: KokoroDtype = (process.env.KOKORO_DTYPE as KokoroDtype) || "fp32"): Promise<Kokoro> {
   let p = models.get(dtype);
   if (!p) {
     p = (async () => {
@@ -66,6 +56,7 @@ function chunks(text: string, max = 500): string[] {
 }
 
 export async function kokoroTts(text: string, voice = KOKORO_DEFAULT, dtype?: KokoroDtype): Promise<{ pcm: Buffer; stats: { loadMs: number; genMs: number; audioSec: number } }> {
+  if (MOCK) return { pcm: fakePcm(Math.max(2, Math.min(12, text.length / 150))), stats: { loadMs: 0, genMs: 0, audioSec: 0 } };
   const t0 = Date.now();
   const m = await model(dtype);
   const loadMs = Date.now() - t0;

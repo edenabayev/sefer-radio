@@ -4,6 +4,7 @@ import crypto from "crypto";
 import * as store from "./storage";
 import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
+import { KOKORO_VERSION, kokoroVoice } from "./kokoro-voices";
 import { pcm16ToMp3 } from "./mp3";
 import { buildSections, cleanSourceText, cleanSourceParagraphs, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
@@ -49,7 +50,8 @@ export interface Progress {
   offset: number; // שניות בתוך הקטע
   lang: "he" | "orig";
   study: boolean; // מצב לימוד שקט: תקציר בחזרה + שאלה בסוף פרק
-  voice?: string;
+  voice?: string; // קול עברי (Gemini)
+  voiceEn?: string; // קול אנגלי (Kokoro) להאזנה במקור
   rate?: number;
   updatedAt: string;
 }
@@ -57,7 +59,7 @@ export interface Progress {
 const P = {
   book: (id: string) => `books/${id}/book.json`,
   he: (id: string, i: number) => `books/${id}/he/${i}.txt`,
-  audio: (id: string, i: number, lang: string, voice: string) => `books/${id}/audio/${lang}/${voice}-${TTS_VERSION}/${i}.mp3`,
+  audio: (id: string, i: number, lang: string, voice: string) => `books/${id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION}/${i}.mp3`,
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
@@ -329,10 +331,12 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
   if (!sec) throw new Error("אין קטע " + i);
   const effLang = lang === "he" ? "he" : book.lang === "he" ? "he" : "en";
   const text = lang === "he" ? await ensureTranslation(book, i) : sec.text;
+  if (effLang === "en") voice = kokoroVoice(voice);
   const p = P.audio(book.id, i, effLang, voice);
   const url = await store.exists(p);
   if (url) return { url, text, lang: effLang, cached: true };
-  const pcm = await tts(text, effLang, voice);
+  // אנגלית: Kokoro (קוד פתוח, רץ כאן על המעבד, בלי עלות לפי תו). עברית: Gemini.
+  const pcm = effLang === "en" ? (await (await import("./kokoro")).kokoroTts(text, voice)).pcm : await tts(text, effLang, voice);
   const mp3 = await pcm16ToMp3(pcm, SAMPLE_RATE);
   const newUrl = await store.writeBytes(p, mp3, "audio/mpeg");
   return { url: newUrl, text, lang: effLang, cached: false };

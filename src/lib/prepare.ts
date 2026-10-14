@@ -4,16 +4,17 @@ import * as store from "./storage";
 import { getBook, getProgress, ensureAudio, ensureTranslation, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
+import { KOKORO_VERSION, KOKORO_DEFAULT, isKokoroVoice } from "./kokoro-voices";
 
 export const CHAPTERS_AHEAD = 2;
 
 const P = {
   lock: (id: string) => `books/${id}/prep.lock.json`,
   heMap: (id: string) => `books/${id}/he.json`,
-  audioDir: (id: string, voice: string, lang: "he" | "en" = "he") => `books/${id}/audio/${lang}/${voice}-${TTS_VERSION}/`,
+  audioDir: (id: string, voice: string, lang: "he" | "en" = "he") => `books/${id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION}/`,
   recap: (id: string, i: number, voice: string) => `books/${id}/recap/${voice}-${TTS_VERSION}/${i}`,
   question: (id: string, c: number, voice: string) => `books/${id}/questions/${voice}-${TTS_VERSION}-p6/${c}`, // p6 = עם 6 שניות שקט בסוף
-  preview: (id: string, voice: string) => `books/${id}/preview/${voice}-${TTS_VERSION}.mp3`,
+  preview: (id: string, voice: string) => `books/${id}/preview/${voice}-${isKokoroVoice(voice) ? KOKORO_VERSION : TTS_VERSION}.mp3`,
 };
 
 /** שפת השמע בפועל: "he" או (במצב מקור, בספר שאינו עברי) "en". */
@@ -55,10 +56,10 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   const book = await getBook(id);
   if (!book) throw new Error("אין ספר כזה");
   const progress = await getProgress(id);
-  const voice = opts.voice || progress.voice || VOICE;
   const from = opts.from ?? progress.section;
-  // מכינים בשפה שהמאזין בחר: אם הוא במצב "מקור" — שמע באנגלית, ולא מתרגמים לעברית בכלל
+  // מכינים בשפה שהמאזין בחר: אם הוא במצב "מקור" — שמע באנגלית (Kokoro), ולא מתרגמים לעברית בכלל
   const lang = audioLang(book, opts.lang ?? progress.lang);
+  const voice = lang === "en" ? (isKokoroVoice(opts.voice) ? opts.voice : progress.voiceEn || KOKORO_DEFAULT) : (!isKokoroVoice(opts.voice) && opts.voice) || progress.voice || VOICE;
   const range = targetRange(book, from);
   let ready = await readyMap(book, voice, lang);
   const readySet = new Set(ready);
@@ -80,7 +81,7 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
 
   const budget = opts.budgetMs ?? 240_000;
   const start = Date.now();
-  const setLock = () => store.writeJSON(P.lock(id), { until: new Date(Date.now() + 120_000).toISOString() });
+  const setLock = () => store.writeJSON(P.lock(id), { until: new Date(Date.now() + 400_000).toISOString() }); // קטע אנגלי ב-Kokoro לוקח עד ~4 דקות
   await setLock();
   let generated = 0;
   let failed = 0;
@@ -200,6 +201,12 @@ export async function voicePreview(book: Book, voice: string): Promise<string> {
   const existing = await store.exists(p);
   if (existing) return existing;
   const i = Math.min(1, book.sections.length - 1);
+  if (isKokoroVoice(voice)) {
+    // דוגמה באנגלית, מהמקור
+    const text = book.sections[i].text.slice(0, 360);
+    const { pcm } = await (await import("./kokoro")).kokoroTts(text, voice);
+    return store.writeBytes(p, await pcm16ToMp3(pcm, SAMPLE_RATE), "audio/mpeg");
+  }
   const text = (book.lang === "he" ? book.sections[i].text : await ensureTranslation(book, i)).slice(0, 420);
   const pcm = await tts(text, "he", voice);
   return store.writeBytes(p, await pcm16ToMp3(pcm, SAMPLE_RATE), "audio/mpeg");

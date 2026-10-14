@@ -30,7 +30,9 @@ export default function Player({ id }: { id: string }) {
   const [cur, setCur] = useState(0);
   const [lang, setLang] = useState<"he" | "orig">("he");
   const [voice, setVoice] = useState("Puck");
+  const [voiceEn, setVoiceEn] = useState("am_michael"); // קול אנגלי (Kokoro) להאזנה במקור
   const [voices, setVoices] = useState<Voice[]>([]);
+  const [voicesEn, setVoicesEn] = useState<Voice[]>([]);
   const [rate, setRate] = useState(1);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState("");
@@ -56,6 +58,9 @@ export default function Player({ id }: { id: string }) {
   const curRef = useRef(0);
   const langRef = useRef<"he" | "orig">("he");
   const voiceRef = useRef("Puck");
+  const voiceEnRef = useRef("am_michael");
+  /** הקול שבו מקשיבים עכשיו: עברי או אנגלי לפי השפה */
+  const audioVoice = () => (langRef.current === "he" ? voiceRef.current : voiceEnRef.current);
   const progRef = useRef<Progress | null>(null);
   const readyRef = useRef<Set<number>>(new Set());
   const cache = useRef(new Map<string, Promise<AudioResult>>());
@@ -79,6 +84,7 @@ export default function Player({ id }: { id: string }) {
   useEffect(() => void (curRef.current = cur), [cur]);
   useEffect(() => void (langRef.current = lang), [lang]);
   useEffect(() => void (voiceRef.current = voice), [voice]);
+  useEffect(() => void (voiceEnRef.current = voiceEn), [voiceEn]);
   useEffect(() => void (progRef.current = prog), [prog]);
   useEffect(() => void (readyRef.current = ready), [ready]);
   useEffect(() => void (transcriptRef.current = transcript), [transcript]);
@@ -118,7 +124,7 @@ export default function Player({ id }: { id: string }) {
 
   // ---- הכנה מראש: מבקשים מהשרת להכין קדימה, ומעדכנים מה מוכן ומה תורגם ----
   const refreshText = useCallback(async () => {
-    const t = await api<{ he: Record<number, string>; ready: number[] }>(`/api/books/${id}/text?voice=${encodeURIComponent(voiceRef.current)}&lang=${langRef.current}`);
+    const t = await api<{ he: Record<number, string>; ready: number[] }>(`/api/books/${id}/text?voice=${encodeURIComponent(audioVoice())}&lang=${langRef.current}`);
     setHe(t.he);
     setReady(new Set(t.ready));
   }, [id]);
@@ -129,7 +135,7 @@ export default function Player({ id }: { id: string }) {
     try {
       const r = await api<{ ready: number[]; busy: boolean; generated: number; error?: string }>(`/api/books/${id}/prepare`, {
         method: "POST",
-        body: JSON.stringify({ from: curRef.current, voice: voiceRef.current, lang: langRef.current, budgetMs: 120_000 }),
+        body: JSON.stringify({ from: curRef.current, voice: audioVoice(), lang: langRef.current, budgetMs: 120_000 }),
       });
       setReady(new Set(r.ready));
       setPrepErr(r.error || "");
@@ -145,10 +151,14 @@ export default function Player({ id }: { id: string }) {
   useEffect(() => {
     (async () => {
       try {
-        const [b, p, v] = await Promise.all([api<BookFull>(`/api/books/${id}`), api<Progress>(`/api/books/${id}/progress`), api<{ voices: Voice[]; default: string }>("/api/voices")]);
+        const [b, p, v] = await Promise.all([api<BookFull>(`/api/books/${id}`), api<Progress>(`/api/books/${id}/progress`), api<{ voices: Voice[]; default: string; voicesEn: Voice[]; defaultEn: string }>("/api/voices")]);
         setBook(b);
         setProg(p);
         setVoices(v.voices);
+        setVoicesEn(v.voicesEn ?? []);
+        const ve = p.voiceEn || v.defaultEn || "am_michael";
+        setVoiceEn(ve);
+        voiceEnRef.current = ve;
         api<{ notes: Note[] }>(`/api/books/${id}/notes`).then((n) => setNotes(n.notes)).catch(() => {});
         const vv = p.voice || v.default;
         setVoice(vv);
@@ -234,7 +244,7 @@ export default function Player({ id }: { id: string }) {
       const b = bookRef.current;
       if (!b) return;
       const l = langRef.current;
-      const v = voiceRef.current;
+      const v = audioVoice();
       if (b.sections[i + 1]) fetchAudio(i + 1, l, v).catch(() => {});
       if (b.sections[i + 2] && readyRef.current.has(i + 2)) fetchAudio(i + 2, l, v).catch(() => {});
       const c = b.sections[i]?.chapter;
@@ -281,7 +291,7 @@ export default function Player({ id }: { id: string }) {
       curRef.current = i;
       setCur(i);
       const l = langRef.current;
-      const v = voiceRef.current;
+      const v = audioVoice();
       const isReady = readyRef.current.has(i);
       if (!isReady) setLoading(l === "he" ? "מכין את הקטע הזה…" : "מכין את הקטע במקור…");
       try {
@@ -387,7 +397,7 @@ export default function Player({ id }: { id: string }) {
   function continueTo(i: number) {
     const b = bookRef.current;
     if (!b || i >= b.sections.length) return;
-    const url = urls.current.get(`${i}:${langRef.current}:${voiceRef.current}`);
+    const url = urls.current.get(`${i}:${langRef.current}:${audioVoice()}`);
     if (url) startKnown(i, url);
     else {
       wantNext.current = i;
@@ -596,10 +606,16 @@ export default function Player({ id }: { id: string }) {
     refreshText().then(() => runPrepare()).catch(() => {});
   }
   function changeVoice(v: string) {
-    setVoice(v);
-    voiceRef.current = v;
+    if (lang === "he") {
+      setVoice(v);
+      voiceRef.current = v;
+      saveProgress({ voice: v });
+    } else {
+      setVoiceEn(v);
+      voiceEnRef.current = v;
+      saveProgress({ voiceEn: v });
+    }
     setSheet(null);
-    saveProgress({ voice: v });
     cache.current.clear();
     urls.current.clear();
     questionUrls.current.clear();
@@ -777,7 +793,9 @@ export default function Player({ id }: { id: string }) {
   const isHebrewBook = book.lang === "he";
   const showOrig = lang === "orig" && !isHebrewBook;
   const noSections = book.sections.length === 0;
-  const voiceLabel = voices.find((v) => v.id === voice)?.label.split(" — ")[0] ?? voice;
+  const voiceList = lang === "he" ? voices : voicesEn;
+  const curVoice = lang === "he" ? voice : voiceEn;
+  const voiceLabel = voiceList.find((v) => v.id === curVoice)?.label.split(" — ")[0] ?? curVoice;
 
   return (
     <div className="reader" style={{ fontSize }}>
@@ -918,16 +936,20 @@ export default function Player({ id }: { id: string }) {
       )}
       {sheet === "voice" && (
         <div className="sheet">
-          <div className="sheetTitle">קול ההקראה</div>
-          <p className="muted small">לחיצה על ▶ משמיעה פסקה מהספר הזה בקול. בחירה מחליפה את הקול לספר הזה (קטעים שכבר הוכנו ייווצרו מחדש ברקע).</p>
-          {voices.map((v) => (
-            <div key={v.id} className={"card row" + (v.id === voice ? " on" : "")}>
+          <div className="sheetTitle">{lang === "he" ? "קול ההקראה בעברית" : "קול ההקראה באנגלית"}</div>
+          <p className="muted small">
+            {lang === "he"
+              ? "לחיצה על ▶ משמיעה פסקה מהספר הזה בקול. בחירה מחליפה את הקול לספר הזה (קטעים שכבר הוכנו ייווצרו מחדש ברקע)."
+              : "קולות של Kokoro — מודל קוד פתוח שרץ על השרת שלנו, בלי עלות לפי תו. ההכנה איטית יותר (כ-3 דקות לקטע) ורצה ברקע."}
+          </p>
+          {voiceList.map((v) => (
+            <div key={v.id} className={"card row" + (v.id === curVoice ? " on" : "")}>
               <button className="iconBtn ghost sm" onClick={() => preview(v.id)} disabled={!!previewing} aria-label="דוגמה">
                 {previewing === v.id ? <span className="spinner" /> : "▶"}
               </button>
               <div className="grow">{v.label}</div>
-              <button className={v.id === voice ? "primary" : "ghost"} onClick={() => changeVoice(v.id)}>
-                {v.id === voice ? "נבחר" : "בחר"}
+              <button className={v.id === curVoice ? "primary" : "ghost"} onClick={() => changeVoice(v.id)}>
+                {v.id === curVoice ? "נבחר" : "בחר"}
               </button>
             </div>
           ))}
