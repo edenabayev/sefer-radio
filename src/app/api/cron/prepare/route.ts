@@ -27,8 +27,13 @@ export async function GET(req: Request) {
     for (const { b } of active) {
       const left = budget - (Date.now() - start);
       if (left < 30_000) break;
-      const r = await prepare(b.id, { budgetMs: left });
-      done[b.id] = r.generated;
+      try {
+        const r = await prepare(b.id, { budgetMs: left });
+        done[b.id] = r.generated;
+      } catch (e) {
+        console.warn("cron prepare", b.id, (e as Error).message);
+        done[b.id] = -1;
+      }
     }
     return ok({ ms: Date.now() - start, done });
   } catch (e) {

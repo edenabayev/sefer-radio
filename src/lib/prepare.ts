@@ -10,15 +10,20 @@ export const CHAPTERS_AHEAD = 2;
 const P = {
   lock: (id: string) => `books/${id}/prep.lock.json`,
   heMap: (id: string) => `books/${id}/he.json`,
-  audioDir: (id: string, voice: string) => `books/${id}/audio/he/${voice}-${TTS_VERSION}/`,
+  audioDir: (id: string, voice: string, lang: "he" | "en" = "he") => `books/${id}/audio/${lang}/${voice}-${TTS_VERSION}/`,
   recap: (id: string, i: number, voice: string) => `books/${id}/recap/${voice}-${TTS_VERSION}/${i}`,
   question: (id: string, c: number, voice: string) => `books/${id}/questions/${voice}-${TTS_VERSION}-p6/${c}`, // p6 = עם 6 שניות שקט בסוף
   preview: (id: string, voice: string) => `books/${id}/preview/${voice}-${TTS_VERSION}.mp3`,
 };
 
-/** אילו קטעים כבר יש להם שמע בעברית בקול הזה. */
-export async function readyMap(book: Book, voice: string): Promise<number[]> {
-  const dir = P.audioDir(book.id, voice);
+/** שפת השמע בפועל: "he" או (במצב מקור, בספר שאינו עברי) "en". */
+export function audioLang(book: Book, lang: "he" | "orig" | undefined): "he" | "en" {
+  return lang === "orig" && book.lang !== "he" ? "en" : "he";
+}
+
+/** אילו קטעים כבר יש להם שמע בשפה הזו ובקול הזה. */
+export async function readyMap(book: Book, voice: string, lang: "he" | "en" = "he"): Promise<number[]> {
+  const dir = P.audioDir(book.id, voice, lang);
   const paths = await store.listPaths(dir);
   return paths
     .map((p) => p.slice(dir.length))
@@ -42,16 +47,20 @@ export interface PrepResult {
   total: number;
   busy: boolean; // מישהו אחר כבר מכין
   generated: number;
+  lang: "he" | "en";
+  error?: string; // למה ההכנה נעצרה (למשל: גוגל מסרב להקריא את המקור)
 }
 
-export async function prepare(id: string, opts: { voice?: string; budgetMs?: number; from?: number } = {}): Promise<PrepResult> {
+export async function prepare(id: string, opts: { voice?: string; budgetMs?: number; from?: number; lang?: "he" | "orig" } = {}): Promise<PrepResult> {
   const book = await getBook(id);
   if (!book) throw new Error("אין ספר כזה");
   const progress = await getProgress(id);
   const voice = opts.voice || progress.voice || VOICE;
   const from = opts.from ?? progress.section;
+  // מכינים בשפה שהמאזין בחר: אם הוא במצב "מקור" — שמע באנגלית, ולא מתרגמים לעברית בכלל
+  const lang = audioLang(book, opts.lang ?? progress.lang);
   const range = targetRange(book, from);
-  let ready = await readyMap(book, voice);
+  let ready = await readyMap(book, voice, lang);
   const readySet = new Set(ready);
   const todo: number[] = [];
   for (let i = range[0]; i <= range[1]; i++) if (!readySet.has(i)) todo.push(i);
@@ -61,33 +70,44 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
     await ensureBackground(book).catch((e) => console.warn("background:", (e as Error).message));
   }
   if (!todo.length || book.lang === "other") {
-    await mergeHeMap(book, ready);
-    return { ready, range, total: book.sections.length, busy: false, generated: 0 };
+    if (lang === "he") await mergeHeMap(book, ready);
+    return { ready, range, total: book.sections.length, busy: false, generated: 0, lang };
   }
 
   // נעילה: אם מישהו אחר מכין עכשיו — לא מתחילים במקביל
   const lock = await store.readJSON<{ until: string }>(P.lock(id));
-  if (lock && new Date(lock.until).getTime() > Date.now()) return { ready, range, total: book.sections.length, busy: true, generated: 0 };
+  if (lock && new Date(lock.until).getTime() > Date.now()) return { ready, range, total: book.sections.length, busy: true, generated: 0, lang };
 
   const budget = opts.budgetMs ?? 240_000;
   const start = Date.now();
   const setLock = () => store.writeJSON(P.lock(id), { until: new Date(Date.now() + 120_000).toISOString() });
   await setLock();
   let generated = 0;
+  let failed = 0;
+  let error: string | undefined;
   try {
     for (const i of todo) {
       if (Date.now() - start > budget) break;
-      await ensureAudio(book, i, "he", voice);
-      generated++;
-      readySet.add(i);
+      try {
+        await ensureAudio(book, i, lang === "he" ? "he" : "orig", voice);
+        generated++;
+        failed = 0;
+        readySet.add(i);
+      } catch (e) {
+        // קטע שנכשל לא עוצר את כולם — אבל שני כישלונות ברצף כן (כנראה בעיה כללית, לא נקודתית)
+        failed++;
+        error = (e as Error).message;
+        console.warn(`prepare ${id} section ${i} (${lang}):`, error);
+        if (failed >= 2) break;
+      }
       await setLock();
     }
   } finally {
     await store.remove(P.lock(id));
   }
   ready = [...readySet].sort((a, b) => a - b);
-  await mergeHeMap(book, ready);
-  return { ready, range, total: book.sections.length, busy: false, generated };
+  if (lang === "he") await mergeHeMap(book, ready);
+  return { ready, range, total: book.sections.length, busy: false, generated, lang, error };
 }
 
 /** מפת התרגומים לתצוגה (קובץ אחד במקום מאות קריאות). */

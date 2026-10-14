@@ -48,6 +48,7 @@ export default function Player({ id }: { id: string }) {
   const [liveBusy, setLiveBusy] = useState<"deep" | "note" | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [toast, setToast] = useState("");
+  const [prepErr, setPrepErr] = useState(""); // למה ההכנה ברקע נעצרה
   const [previewing, setPreviewing] = useState("");
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -117,7 +118,7 @@ export default function Player({ id }: { id: string }) {
 
   // ---- הכנה מראש: מבקשים מהשרת להכין קדימה, ומעדכנים מה מוכן ומה תורגם ----
   const refreshText = useCallback(async () => {
-    const t = await api<{ he: Record<number, string>; ready: number[] }>(`/api/books/${id}/text?voice=${encodeURIComponent(voiceRef.current)}`);
+    const t = await api<{ he: Record<number, string>; ready: number[] }>(`/api/books/${id}/text?voice=${encodeURIComponent(voiceRef.current)}&lang=${langRef.current}`);
     setHe(t.he);
     setReady(new Set(t.ready));
   }, [id]);
@@ -126,11 +127,12 @@ export default function Player({ id }: { id: string }) {
     if (prepBusy.current) return;
     prepBusy.current = true;
     try {
-      const r = await api<{ ready: number[]; busy: boolean; generated: number }>(`/api/books/${id}/prepare`, {
+      const r = await api<{ ready: number[]; busy: boolean; generated: number; error?: string }>(`/api/books/${id}/prepare`, {
         method: "POST",
-        body: JSON.stringify({ from: curRef.current, voice: voiceRef.current, budgetMs: 120_000 }),
+        body: JSON.stringify({ from: curRef.current, voice: voiceRef.current, lang: langRef.current, budgetMs: 120_000 }),
       });
       setReady(new Set(r.ready));
+      setPrepErr(r.error || "");
       if (r.generated > 0) await refreshText();
     } catch {
       /* ההכנה תנסה שוב בסיבוב הבא */
@@ -234,7 +236,7 @@ export default function Player({ id }: { id: string }) {
       const l = langRef.current;
       const v = voiceRef.current;
       if (b.sections[i + 1]) fetchAudio(i + 1, l, v).catch(() => {});
-      if (b.sections[i + 2] && l === "he" && readyRef.current.has(i + 2)) fetchAudio(i + 2, l, v).catch(() => {});
+      if (b.sections[i + 2] && readyRef.current.has(i + 2)) fetchAudio(i + 2, l, v).catch(() => {});
       const c = b.sections[i]?.chapter;
       if (l === "he" && progRef.current?.study && b.chapters[c]?.end === i && b.sections[i + 1]) {
         const qk = `${c}:${v}`;
@@ -280,7 +282,7 @@ export default function Player({ id }: { id: string }) {
       setCur(i);
       const l = langRef.current;
       const v = voiceRef.current;
-      const isReady = l === "he" && readyRef.current.has(i);
+      const isReady = readyRef.current.has(i);
       if (!isReady) setLoading(l === "he" ? "מכין את הקטע הזה…" : "מכין את הקטע במקור…");
       try {
         const r = await fetchAudio(i, l, v);
@@ -584,8 +586,14 @@ export default function Player({ id }: { id: string }) {
     setLang(l);
     langRef.current = l;
     saveProgress({ lang: l });
+    // "מוכן" הוא לפי שפה — מתחילים לספור מחדש, וההכנה ברקע עוברת לשפה הזו
+    setReady(new Set());
+    readyRef.current = new Set();
+    urls.current.clear();
+    setPrepErr("");
     const was = !audioRef.current?.paused;
     playSection(curRef.current, { autoplay: was });
+    refreshText().then(() => runPrepare()).catch(() => {});
   }
   function changeVoice(v: string) {
     setVoice(v);
@@ -800,6 +808,7 @@ export default function Player({ id }: { id: string }) {
           </p>
         )}
         {err && <p className="err small">{err}</p>}
+        {prepErr && !err && <p className="err small">ההכנה ברקע נעצרה: {prepErr}</p>}
         {interlude && (
           <div className="interlude">
             <div className="pill">{interlude === "recap" ? "תזכורת: מה שמעת עד עכשיו" : "שאלה לסיום הפרק — רגע לחשוב, ואז ממשיכים"}</div>

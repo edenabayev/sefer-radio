@@ -209,7 +209,12 @@ async function ttsChunk(part: string, voice: string): Promise<Buffer> {
     },
   });
   const parts = (res.candidates?.[0]?.content?.parts ?? []).filter((p) => p.inlineData?.data);
-  if (!parts.length) throw new Error("Gemini TTS לא החזיר שמע (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
+  if (!parts.length) {
+    const reason = res.candidates?.[0]?.finishReason;
+    // "OTHER" בלי שמע = המודל מסרב להקריא את הטקסט (קורה עם טקסט מקורי של ספר מוגן בזכויות — זיהוי ציטוט)
+    if (String(reason) === "OTHER") throw new Error("גוגל מסרב להקריא את הטקסט הזה כמו שהוא (כנראה זיהוי של ספר מוגן בזכויות). התרגום לעברית עובד — ההקראה במקור לא.");
+    throw new Error("Gemini TTS לא החזיר שמע (" + JSON.stringify(reason) + ")");
+  }
   return Buffer.concat(parts.map((p) => wavToPcm(Buffer.from(p.inlineData!.data!, "base64"))));
 }
 
