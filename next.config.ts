@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
       "node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime.so.1*",
       "node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_shared.so",
       "node_modules/phonemizer/dist/**",
+      "node_modules/kokoro-js/voices/**",
     ],
   },
   outputFileTracingExcludes: {
