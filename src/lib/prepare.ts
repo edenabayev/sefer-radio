@@ -12,7 +12,7 @@ const P = {
   heMap: (id: string) => `books/${id}/he.json`,
   audioDir: (id: string, voice: string) => `books/${id}/audio/he/${voice}-${TTS_VERSION}/`,
   recap: (id: string, i: number, voice: string) => `books/${id}/recap/${voice}-${TTS_VERSION}/${i}`,
-  question: (id: string, c: number, voice: string) => `books/${id}/questions/${voice}-${TTS_VERSION}/${c}`,
+  question: (id: string, c: number, voice: string) => `books/${id}/questions/${voice}-${TTS_VERSION}-p6/${c}`, // p6 = עם 6 שניות שקט בסוף
   preview: (id: string, voice: string) => `books/${id}/preview/${voice}-${TTS_VERSION}.mp3`,
 };
 
@@ -127,11 +127,13 @@ export async function heTexts(book: Book, idx: number[]): Promise<Record<number,
   return out;
 }
 
-async function speak(text: string, voice: string, pathNoExt: string): Promise<string> {
+async function speak(text: string, voice: string, pathNoExt: string, trailingSilenceSec = 0): Promise<string> {
   const audioPath = pathNoExt + ".mp3";
   const existing = await store.exists(audioPath);
   if (existing) return existing;
-  const pcm = await tts(text, "he", voice);
+  let pcm = await tts(text, "he", voice);
+  // שקט בתוך הקובץ (ולא טיימר בדפדפן): בטלפון עם מסך כבוי טיימרים לא אמינים, שמע שמתנגן כן
+  if (trailingSilenceSec > 0) pcm = Buffer.concat([pcm, Buffer.alloc(Math.round(SAMPLE_RATE * trailingSilenceSec) * 2)]);
   return store.writeBytes(audioPath, await pcm16ToMp3(pcm, SAMPLE_RATE), "audio/mpeg");
 }
 
@@ -168,7 +170,7 @@ export async function chapterQuestion(book: Book, c: number, voice = VOICE): Pro
     text = await genText(`הפרק "${ch.title}" מתוך "${book.title}":\n${body}\n\nהשאלה:`, sys, 512);
     await store.writeBytes(base + ".txt", text, "text/plain; charset=utf-8");
   }
-  const url = await speak(text, voice, base);
+  const url = await speak(text, voice, base, 6);
   return { text, url };
 }
 

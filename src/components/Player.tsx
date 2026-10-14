@@ -39,7 +39,7 @@ export default function Player({ id }: { id: string }) {
   const [sheet, setSheet] = useState<Sheet>(null);
   const [theme, setTheme] = useState<Theme>("dark");
   const [fontSize, setFontSize] = useState(19);
-  const [interlude, setInterlude] = useState<"recap" | "question" | "pause" | null>(null);
+  const [interlude, setInterlude] = useState<"recap" | "question" | null>(null);
   const [interludeText, setInterludeText] = useState("");
   const [sleepAt, setSleepAt] = useState<number | "chapter" | null>(null);
   const [live, setLiveState] = useState<LiveState | null>(null);
@@ -58,6 +58,9 @@ export default function Player({ id }: { id: string }) {
   const progRef = useRef<Progress | null>(null);
   const readyRef = useRef<Set<number>>(new Set());
   const cache = useRef(new Map<string, Promise<AudioResult>>());
+  const urls = useRef(new Map<string, string>()); // כתובות שכבר ידועות — כדי לעבור לקטע הבא בלי להמתין לרשת
+  const questionUrls = useRef(new Map<string, string>()); // שאלת סוף פרק, לפי פרק+קול
+  const wantNext = useRef<number | null>(null); // קטע שהיה אמור להתחיל ולא התחיל (מסך כבוי) — נשלים כשחוזרים
   const pendingSeekRatio = useRef<number | null>(null);
   const interludeRef = useRef<{ kind: "recap" | "question"; resume: { src: string; t: number; i: number } | null; then: "continue" | "next" } | null>(null);
   const pendingRecap = useRef(false);
@@ -212,6 +215,7 @@ export default function Player({ id }: { id: string }) {
       const p = api<AudioResult>(`/api/books/${id}/sections/${i}/audio?lang=${l}&voice=${encodeURIComponent(v)}`);
       cache.current.set(k, p);
       p.then((r) => {
+        urls.current.set(k, r.url);
         if (l === "he") {
           setReady((s) => new Set(s).add(i));
           setHe((m) => (m[i] ? m : { ...m, [i]: r.text }));
@@ -220,6 +224,48 @@ export default function Player({ id }: { id: string }) {
       return p;
     },
     [id],
+  );
+
+  /** הכתובות של מה שמגיע אחרי הקטע הזה — כדי שהמעבר בסוף יהיה מיידי, גם כשהמסך כבוי. */
+  const prefetchAhead = useCallback(
+    (i: number) => {
+      const b = bookRef.current;
+      if (!b) return;
+      const l = langRef.current;
+      const v = voiceRef.current;
+      if (b.sections[i + 1]) fetchAudio(i + 1, l, v).catch(() => {});
+      if (b.sections[i + 2] && l === "he" && readyRef.current.has(i + 2)) fetchAudio(i + 2, l, v).catch(() => {});
+      const c = b.sections[i]?.chapter;
+      if (l === "he" && progRef.current?.study && b.chapters[c]?.end === i && b.sections[i + 1]) {
+        const qk = `${c}:${v}`;
+        if (!questionUrls.current.has(qk))
+          api<{ text: string; url: string }>(`/api/books/${id}/chapters/${c}/question`)
+            .then((r) => questionUrls.current.set(qk, r.url))
+            .catch(() => {});
+      }
+    },
+    [fetchAudio, id],
+  );
+
+  /** מעבר מיידי לקטע שכתובתו כבר ידועה: בלי המתנה, בלי רשת — קודם מנגנים, אחר כך מעדכנים מסך. */
+  const startKnown = useCallback(
+    (i: number, url: string) => {
+      const a = audioRef.current;
+      if (!a) return;
+      interludeRef.current = null;
+      curRef.current = i;
+      a.src = url;
+      a.playbackRate = rate;
+      a.play().catch(() => {
+        wantNext.current = i;
+      });
+      setInterlude(null);
+      setCur(i);
+      setProg((p) => (p ? { ...p, section: i } : p));
+      saveProgress({ section: i, offset: 0, lang: langRef.current });
+      prefetchAhead(i);
+    },
+    [rate, saveProgress, prefetchAhead],
   );
 
   const playSection = useCallback(
@@ -247,8 +293,7 @@ export default function Player({ id }: { id: string }) {
         setLoading("");
         setProg((p) => (p ? { ...p, section: i } : p));
         saveProgress({ section: i, offset: opts.startAt ?? 0, lang: l });
-        // מכינים את הבא מיד אם עדיין לא מוכן
-        if (b.sections[i + 1] && !(l === "he" && readyRef.current.has(i + 1))) fetchAudio(i + 1, l, v).catch(() => {});
+        prefetchAhead(i);
       } catch (e) {
         setLoading("");
         setErr((e as Error).message || "תקלה בהשמעה");
@@ -298,12 +343,8 @@ export default function Player({ id }: { id: string }) {
     if (il) {
       interludeRef.current = null;
       if (il.kind === "question") {
-        // רגע לחשוב, ואז ממשיכים
-        setInterlude("pause");
-        window.setTimeout(() => {
-          setInterlude(null);
-          if (curRef.current + 1 < b.sections.length) playSection(curRef.current + 1);
-        }, 6000);
+        // השקט לחשיבה כבר בתוך קובץ השאלה — ממשיכים מיד לקטע הבא
+        continueTo(curRef.current + 1);
         return;
       }
       setInterlude(null);
@@ -325,9 +366,34 @@ export default function Player({ id }: { id: string }) {
       setPlaying(false);
       return;
     }
-    if (chapterEnd && progRef.current?.study && langRef.current === "he") playInterlude("question", "next");
-    else playSection(i + 1);
+    if (chapterEnd && progRef.current?.study && langRef.current === "he") {
+      const qUrl = questionUrls.current.get(`${b.sections[i].chapter}:${voiceRef.current}`);
+      if (qUrl) {
+        // שאלת סוף פרק שכבר הוכנה — מנגנים מיד
+        interludeRef.current = { kind: "question", resume: null, then: "next" };
+        a.src = qUrl;
+        a.playbackRate = rate;
+        a.play().catch(() => {
+          wantNext.current = i + 1;
+        });
+        setInterlude("question");
+        api<{ text: string; url: string }>(`/api/books/${id}/chapters/${b.sections[i].chapter}/question`).then((r) => setInterludeText(r.text)).catch(() => {});
+      } else playInterlude("question", "next");
+    } else continueTo(i + 1);
   };
+  /** הקטע הבא: מיידי אם הכתובת ידועה, אחרת בדרך הרגילה (ואז נזכור להשלים אם המסך היה כבוי). */
+  function continueTo(i: number) {
+    const b = bookRef.current;
+    if (!b || i >= b.sections.length) return;
+    const url = urls.current.get(`${i}:${langRef.current}:${voiceRef.current}`);
+    if (url) startKnown(i, url);
+    else {
+      wantNext.current = i;
+      playSection(i).then(() => {
+        if (curRef.current === i && !audioRef.current?.paused) wantNext.current = null;
+      });
+    }
+  }
   const onLoaded = () => {
     const a = audioRef.current;
     if (a && pendingSeekRatio.current != null && isFinite(a.duration)) {
@@ -356,6 +422,7 @@ export default function Player({ id }: { id: string }) {
   };
   const onPlay = () => {
     setPlaying(true);
+    wantNext.current = null;
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
   };
   const onPause = () => {
@@ -408,6 +475,21 @@ export default function Player({ id }: { id: string }) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book, cur, goNext, goPrev]);
+
+  // ---- חזרה למסך: אם הקטע נגמר והבא לא התחיל בזמן שהמסך היה כבוי — ממשיכים ----
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const a = audioRef.current;
+      if (a && a.paused && wantNext.current != null) {
+        const next = wantNext.current;
+        wantNext.current = null;
+        playSection(next);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [playSection]);
 
   // ---- גלילה אוטומטית לפסקה הנוכחית ----
   const paraIdx = useMemo(() => {
@@ -481,6 +563,13 @@ export default function Player({ id }: { id: string }) {
       return;
     }
     if (a.paused) {
+      if (wantNext.current != null || a.ended) {
+        // הקטע נגמר והבא לא התחיל (מסך כבוי) — ממשיכים ממנו
+        const next = wantNext.current ?? curRef.current + 1;
+        wantNext.current = null;
+        await playSection(next);
+        return;
+      }
       if (pausedAt.current && Date.now() - pausedAt.current > 60_000 && !interludeRef.current) a.currentTime = Math.max(0, a.currentTime - 5);
       await a.play();
     } else a.pause();
@@ -504,6 +593,8 @@ export default function Player({ id }: { id: string }) {
     setSheet(null);
     saveProgress({ voice: v });
     cache.current.clear();
+    urls.current.clear();
+    questionUrls.current.clear();
     setReady(new Set());
     refreshText().then(runPrepare);
     const was = !audioRef.current?.paused;
@@ -711,7 +802,7 @@ export default function Player({ id }: { id: string }) {
         {err && <p className="err small">{err}</p>}
         {interlude && (
           <div className="interlude">
-            <div className="pill">{interlude === "recap" ? "תזכורת: מה שמעת עד עכשיו" : interlude === "question" ? "שאלה לסיום הפרק" : "רגע לחשוב… ממשיכים"}</div>
+            <div className="pill">{interlude === "recap" ? "תזכורת: מה שמעת עד עכשיו" : "שאלה לסיום הפרק — רגע לחשוב, ואז ממשיכים"}</div>
             <div>{interludeText}</div>
           </div>
         )}

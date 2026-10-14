@@ -56,7 +56,7 @@ await page.waitForSelector("text=שאלה לסיום הפרק", { timeout: 60000
 log("chapter question shown");
 await playing();
 await finish();
-await page.waitForSelector("text=רגע לחשוב", { timeout: 30000 });
+// השקט לחשיבה נמצא בתוך קובץ השאלה; בסופו ממשיכים מיד לקטע הבא
 await page.waitForFunction((n) => document.querySelector(".sec.cur")?.id === "s-" + (n + 1), chapterEnd, { timeout: 30000 });
 await playing();
 log("continued to next chapter:", await page.$eval(".sec.cur", (el) => el.id));
