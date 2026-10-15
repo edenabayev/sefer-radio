@@ -70,6 +70,8 @@ const P = {
 /** כותרת פרק כמו שמקריאים אותה: "CHAPTER IV" → "Chapter 4" (המספר הופך למילים בצינור ההקראה). */
 export function spokenHeading(title: string, lang: "he" | "en"): string {
   const t = title.replace(/^#\s*/, "").trim();
+  // כותרת שהיא רק מספר ("17", "IV") — אומרים "פרק 17" / "Chapter 17"
+  if (/^\d{1,3}\.?$/.test(t)) return (lang === "en" ? "Chapter " : "פרק ") + t.replace(/\.$/, "");
   if (lang !== "en") return t;
   const roman = (r: string) => {
     const v: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
