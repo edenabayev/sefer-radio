@@ -3,7 +3,7 @@
 // נגן קבוע למטה, בחירת קול ומהירות, מצב לימוד שקט (תקציר בחזרה, שאלה בסוף פרק), ושיחה חיה.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { api, type AudioResult, type BookFull, type Note, type Progress } from "@/lib/client";
+import { api, type AudioResult, type BookFull, type Manifest, type Note, type Progress, type StreamItem } from "@/lib/client";
 import { startLive, type LiveHandle, type LiveState } from "@/lib/live";
 
 interface Voice {
@@ -64,11 +64,12 @@ export default function Player({ id }: { id: string }) {
   const progRef = useRef<Progress | null>(null);
   const readyRef = useRef<Set<number>>(new Set());
   const cache = useRef(new Map<string, Promise<AudioResult>>());
-  const urls = useRef(new Map<string, string>()); // כתובות שכבר ידועות — כדי לעבור לקטע הבא בלי להמתין לרשת
-  const questionUrls = useRef(new Map<string, string>()); // שאלת סוף פרק, לפי פרק+קול
+  const manifestRef = useRef<Manifest | null>(null); // הזרם שמתנגן עכשיו: אילו קטעים ואיפה כל אחד מתחיל
+  const nextManifestRef = useRef<Manifest | null>(null); // הזרם הבא, מוכן מראש לקראת סוף הנוכחי
+  const segRef = useRef<StreamItem | null>(null); // הפריט (קטע/שאלה) שמתנגן ברגע זה
   const wantNext = useRef<number | null>(null); // קטע שהיה אמור להתחיל ולא התחיל (מסך כבוי) — נשלים כשחוזרים
-  const pendingSeekRatio = useRef<number | null>(null);
-  const interludeRef = useRef<{ kind: "recap" | "question"; resume: { src: string; t: number; i: number } | null; then: "continue" | "next" } | null>(null);
+  const pendingSeek = useRef<number | null>(null);
+  const interludeRef = useRef<{ kind: "recap" } | { kind: "question"; chapter: number } | null>(null);
   const pendingRecap = useRef(false);
   const lastManualScroll = useRef(0);
   const pausedAt = useRef(0);
@@ -218,7 +219,7 @@ export default function Player({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, book?.extraction?.status]);
 
-  // ---- שמע של קטע (מהזיכרון, או יצירה אם עוד לא הוכן) ----
+  // ---- שמע של קטע: יצירה בשרת אם עוד לא הוכן (הזרם הרציף מנגן רק מה שכבר מוכן) ----
   const fetchAudio = useCallback(
     (i: number, l: "he" | "orig", v: string): Promise<AudioResult> => {
       const k = `${i}:${l}:${v}`;
@@ -227,61 +228,37 @@ export default function Player({ id }: { id: string }) {
       const p = api<AudioResult>(`/api/books/${id}/sections/${i}/audio?lang=${l}&voice=${encodeURIComponent(v)}`);
       cache.current.set(k, p);
       p.then((r) => {
-        urls.current.set(k, r.url);
-        if (l === "he") {
-          setReady((s) => new Set(s).add(i));
-          setHe((m) => (m[i] ? m : { ...m, [i]: r.text }));
-        }
+        setReady((s) => new Set(s).add(i));
+        if (l === "he") setHe((m) => (m[i] ? m : { ...m, [i]: r.text }));
       }).catch(() => cache.current.delete(k));
       return p;
     },
     [id],
   );
 
-  /** הכתובות של מה שמגיע אחרי הקטע הזה — כדי שהמעבר בסוף יהיה מיידי, גם כשהמסך כבוי. */
-  const prefetchAhead = useCallback(
-    (i: number) => {
-      const b = bookRef.current;
-      if (!b) return;
-      const l = langRef.current;
-      const v = audioVoice();
-      if (b.sections[i + 1]) fetchAudio(i + 1, l, v).catch(() => {});
-      if (b.sections[i + 2] && readyRef.current.has(i + 2)) fetchAudio(i + 2, l, v).catch(() => {});
-      const c = b.sections[i]?.chapter;
-      if (l === "he" && progRef.current?.study && b.chapters[c]?.end === i && b.sections[i + 1]) {
-        const qk = `${c}:${v}`;
-        if (!questionUrls.current.has(qk))
-          api<{ text: string; url: string }>(`/api/books/${id}/chapters/${c}/question`)
-            .then((r) => questionUrls.current.set(qk, r.url))
-            .catch(() => {});
-      }
-    },
-    [fetchAudio, id],
+  // ---- הזרם הרציף: קובץ שמע אחד ארוך מכל מה שמוכן, כדי שלא יהיה "סוף שיר" כל שתי דקות ----
+  const loadManifest = useCallback(
+    (from: number) =>
+      api<Manifest>(`/api/books/${id}/stream/manifest?from=${from}&lang=${langRef.current}&voice=${encodeURIComponent(audioVoice())}&study=${progRef.current?.study === false ? 0 : 1}`),
+    [id],
   );
-
-  /** מעבר מיידי לקטע שכתובתו כבר ידועה: בלי המתנה, בלי רשת — קודם מנגנים, אחר כך מעדכנים מסך. */
-  const startKnown = useCallback(
-    (i: number, url: string) => {
-      const a = audioRef.current;
-      if (!a) return;
-      interludeRef.current = null;
-      curRef.current = i;
-      a.src = url;
-      a.playbackRate = rate;
-      a.play().catch(() => {
-        wantNext.current = i;
-      });
-      setInterlude(null);
-      setCur(i);
-      setProg((p) => (p ? { ...p, section: i } : p));
-      saveProgress({ section: i, offset: 0, lang: langRef.current });
-      prefetchAhead(i);
-    },
-    [rate, saveProgress, prefetchAhead],
+  const streamUrl = useCallback(
+    (m: Manifest) => `/api/books/${id}/stream?from=${m.from}&upto=${m.upto}&qs=${m.qs.join(",")}&lang=${langRef.current}&voice=${encodeURIComponent(m.voice)}`,
+    [id],
   );
+  const itemAt = (m: Manifest, t: number): StreamItem | null => {
+    let found: StreamItem | null = null;
+    for (const it of m.items) {
+      if (t >= it.start - 0.05) found = it;
+      else break;
+    }
+    return found;
+  };
+  const itemOf = (m: Manifest | null, i: number) => m?.items.find((it) => it.kind === "section" && it.i === i) ?? null;
 
-  const playSection = useCallback(
-    async (i: number, opts: { startAt?: number; ratio?: number; autoplay?: boolean } = {}) => {
+  /** מתחילים זרם מהקטע הזה (מייצרים אותו קודם אם עוד לא הוכן). */
+  const playFrom = useCallback(
+    async (i: number, opts: { offset?: number; ratio?: number; autoplay?: boolean } = {}) => {
       const a = audioRef.current;
       const b = bookRef.current;
       if (!a || !b || !b.sections[i]) return;
@@ -292,147 +269,184 @@ export default function Player({ id }: { id: string }) {
       setCur(i);
       const l = langRef.current;
       const v = audioVoice();
-      const isReady = readyRef.current.has(i);
-      if (!isReady) setLoading(l === "he" ? "מכין את הקטע הזה…" : "מכין את הקטע במקור…");
       try {
-        const r = await fetchAudio(i, l, v);
+        let m = await loadManifest(i);
+        if (!m.items.length) {
+          setLoading(l === "he" ? "מכין את הקטע הזה…" : "מכין את הקטע במקור…");
+          await fetchAudio(i, l, v);
+          m = await loadManifest(i);
+          if (!m.items.length) throw new Error("הקטע עדיין לא מוכן");
+        }
         if (curRef.current !== i) return;
-        pendingSeekRatio.current = opts.ratio ?? null;
-        a.src = r.url;
+        manifestRef.current = m;
+        nextManifestRef.current = null;
+        const first = m.items[0];
+        const t0 = opts.ratio != null ? opts.ratio * first.seconds : Math.min(opts.offset ?? 0, Math.max(0, first.seconds - 2));
+        pendingSeek.current = t0;
+        a.src = streamUrl(m);
         a.playbackRate = rate;
-        if (opts.startAt) a.currentTime = opts.startAt;
+        if (t0 > 0) a.currentTime = t0;
+        segRef.current = first;
+        setPos({ t: t0, d: first.seconds });
         if (opts.autoplay !== false) await a.play();
         setLoading("");
         setProg((p) => (p ? { ...p, section: i } : p));
-        const first = opts.autoplay !== false && !progRef.current?.startedAt;
-        if (first) setProg((p) => (p ? { ...p, startedAt: new Date().toISOString() } : p));
-        saveProgress({ section: i, offset: opts.startAt ?? 0, lang: l, ...(first ? { startedAt: new Date().toISOString() } : {}) });
-        if (first) window.setTimeout(runPrepare, 1500); // מרגע ▶ הראשון — ההכנה ברקע מתחילה
-        prefetchAhead(i);
+        const isFirst = opts.autoplay !== false && !progRef.current?.startedAt;
+        if (isFirst) setProg((p) => (p ? { ...p, startedAt: new Date().toISOString() } : p));
+        saveProgress({ section: i, offset: Math.floor(t0), lang: l, ...(isFirst ? { startedAt: new Date().toISOString() } : {}) });
+        if (isFirst) window.setTimeout(runPrepare, 1500); // מרגע ▶ הראשון — ההכנה ברקע מתחילה
       } catch (e) {
         setLoading("");
         setErr((e as Error).message || "תקלה בהשמעה");
       }
     },
-    [fetchAudio, rate, saveProgress, runPrepare],
+    [fetchAudio, loadManifest, streamUrl, rate, saveProgress, runPrepare],
   );
 
-  // ---- קטעי ביניים: תקציר בחזרה / שאלה בסוף פרק ----
-  const playInterlude = useCallback(
-    async (kind: "recap" | "question", then: "continue" | "next") => {
+  /** קפיצה לקטע: בתוך הזרם הנוכחי אם הוא שם (בלי להחליף קובץ), אחרת זרם חדש. */
+  const seekToSection = useCallback(
+    (i: number, ratio = 0) => {
       const a = audioRef.current;
-      const b = bookRef.current;
-      if (!a || !b) return;
-      const i = curRef.current;
-      try {
-        setLoading(kind === "recap" ? "מכין תזכורת קצרה…" : "מכין שאלה לסיום הפרק…");
-        const r =
-          kind === "recap"
-            ? await api<{ text: string; url: string }>(`/api/books/${id}/recap?upto=${i}`)
-            : await api<{ text: string; url: string }>(`/api/books/${id}/chapters/${b.sections[i].chapter}/question`);
-        setLoading("");
-        interludeRef.current = { kind, resume: then === "continue" ? { src: a.src, t: a.currentTime, i } : null, then };
-        setInterlude(kind);
-        setInterludeText(r.text);
-        a.src = r.url;
-        a.playbackRate = rate;
-        await a.play();
-      } catch {
-        setLoading("");
-        interludeRef.current = null;
-        setInterlude(null);
-        if (kind === "recap") playSection(i);
-        else if (then === "next") playSection(i + 1);
-        else a.play().catch(() => {});
+      const m = manifestRef.current;
+      const it = itemOf(m, i);
+      // הזרם "טרי" אם לא הוכן כלום מעבר לסופו; אחרת בונים זרם חדש (שיכלול גם שאלות סוף פרק שנוצרו בינתיים)
+      const fresh = !!m && !readyRef.current.has(m.upto + 1);
+      if (a && it && a.src && fresh) {
+        a.currentTime = it.start + ratio * it.seconds;
+        if (a.paused) a.play().catch(() => {});
+        return;
       }
+      playFrom(i, { ratio });
     },
-    [id, rate, playSection],
+    [playFrom],
   );
+
+  // ---- תקציר בחזרה אחרי הפסקה (קובץ נפרד; בסופו מתחיל הזרם) ----
+  const playRecap = useCallback(async () => {
+    const a = audioRef.current;
+    if (!a) return;
+    const i = curRef.current;
+    try {
+      setLoading("מכין תזכורת קצרה…");
+      const r = await api<{ text: string; url: string }>(`/api/books/${id}/recap?upto=${i}`);
+      setLoading("");
+      interludeRef.current = { kind: "recap" };
+      manifestRef.current = null;
+      setInterlude("recap");
+      setInterludeText(r.text);
+      a.src = r.url;
+      a.playbackRate = rate;
+      await a.play();
+    } catch {
+      setLoading("");
+      interludeRef.current = null;
+      setInterlude(null);
+      playFrom(i, { offset: progRef.current?.offset || 0 });
+    }
+  }, [id, rate, playFrom]);
 
   // ---- אירועי הנגן ----
   const onEnded = () => {
     const a = audioRef.current;
     const b = bookRef.current;
     if (!a || !b) return;
-    const il = interludeRef.current;
-    if (il) {
+    if (interludeRef.current?.kind === "recap") {
       interludeRef.current = null;
-      if (il.kind === "question") {
-        // השקט לחשיבה כבר בתוך קובץ השאלה — ממשיכים מיד לקטע הבא
-        continueTo(curRef.current + 1);
-        return;
-      }
       setInterlude(null);
-      if (il.resume) {
-        a.src = il.resume.src;
-        a.currentTime = il.resume.t;
-        a.play().catch(() => {});
-      } else playSection(curRef.current);
+      playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
       return;
     }
-    const i = curRef.current;
-    const chapterEnd = b.chapters[b.sections[i].chapter]?.end === i;
-    if (sleepAt === "chapter" && chapterEnd) {
-      setSleepAt(null);
+    const m = manifestRef.current;
+    const next = m ? m.upto + 1 : curRef.current + 1;
+    if (next >= b.sections.length) {
       setPlaying(false);
       return;
     }
-    if (i + 1 >= b.sections.length) {
-      setPlaying(false);
-      return;
-    }
-    if (chapterEnd && progRef.current?.study && langRef.current === "he") {
-      const qUrl = questionUrls.current.get(`${b.sections[i].chapter}:${voiceRef.current}`);
-      if (qUrl) {
-        // שאלת סוף פרק שכבר הוכנה — מנגנים מיד
-        interludeRef.current = { kind: "question", resume: null, then: "next" };
-        a.src = qUrl;
-        a.playbackRate = rate;
-        a.play().catch(() => {
-          wantNext.current = i + 1;
-        });
-        setInterlude("question");
-        api<{ text: string; url: string }>(`/api/books/${id}/chapters/${b.sections[i].chapter}/question`).then((r) => setInterludeText(r.text)).catch(() => {});
-      } else playInterlude("question", "next");
-    } else continueTo(i + 1);
-  };
-  /** הקטע הבא: מיידי אם הכתובת ידועה, אחרת בדרך הרגילה (ואז נזכור להשלים אם המסך היה כבוי). */
-  function continueTo(i: number) {
-    const b = bookRef.current;
-    if (!b || i >= b.sections.length) return;
-    const url = urls.current.get(`${i}:${langRef.current}:${audioVoice()}`);
-    if (url) startKnown(i, url);
-    else {
-      wantNext.current = i;
-      playSection(i).then(() => {
-        if (curRef.current === i && !audioRef.current?.paused) wantNext.current = null;
+    const nm = nextManifestRef.current;
+    if (nm && nm.from === next && nm.items.length) {
+      // הזרם הבא כבר הוכן מראש — מחליפים באותו רגע, בלי רשת
+      manifestRef.current = nm;
+      nextManifestRef.current = null;
+      curRef.current = next;
+      segRef.current = nm.items[0];
+      a.src = streamUrl(nm);
+      a.playbackRate = rate;
+      a.play().catch(() => {
+        wantNext.current = next;
       });
+      setCur(next);
+      setInterlude(null);
+      saveProgress({ section: next, offset: 0, lang: langRef.current });
+      return;
     }
-  }
+    wantNext.current = next;
+    playFrom(next).then(() => {
+      if (curRef.current === next && !audioRef.current?.paused) wantNext.current = null;
+    });
+  };
   const onLoaded = () => {
     const a = audioRef.current;
-    if (a && pendingSeekRatio.current != null && isFinite(a.duration)) {
-      a.currentTime = pendingSeekRatio.current * a.duration;
-      pendingSeekRatio.current = null;
-    }
+    if (a && pendingSeek.current != null && pendingSeek.current > 0 && Math.abs(a.currentTime - pendingSeek.current) > 1) a.currentTime = pendingSeek.current;
+    pendingSeek.current = null;
   };
   const onTime = () => {
     const a = audioRef.current;
-    if (!a) return;
-    setPos({ t: a.currentTime, d: isFinite(a.duration) ? a.duration : 0 });
-    if ("mediaSession" in navigator && isFinite(a.duration) && a.duration > 0) {
+    const b = bookRef.current;
+    if (!a || !b) return;
+    const m = manifestRef.current;
+    if (!m) {
+      setPos({ t: a.currentTime, d: isFinite(a.duration) ? a.duration : 0 });
+      return;
+    }
+    const it = itemAt(m, a.currentTime);
+    if (!it) return;
+    const prev = segRef.current;
+    segRef.current = it;
+    if (it.kind === "section") {
+      if (prev && prev !== it && sleepAt === "chapter" && prev.chapter !== it.chapter) {
+        a.pause();
+        setSleepAt(null);
+      }
+      if (curRef.current !== it.i) {
+        curRef.current = it.i;
+        setCur(it.i);
+        setProg((p) => (p ? { ...p, section: it.i } : p));
+      }
+      if (interludeRef.current) {
+        interludeRef.current = null;
+        setInterlude(null);
+      }
+    } else if (interludeRef.current?.kind !== "question" || interludeRef.current.chapter !== it.i) {
+      interludeRef.current = { kind: "question", chapter: it.i };
+      setInterlude("question");
+      setInterludeText("");
+      api<{ text: string }>(`/api/books/${id}/chapters/${it.i}/question`).then((r) => setInterludeText(r.text)).catch(() => {});
+    }
+    const rel = Math.max(0, a.currentTime - it.start);
+    setPos({ t: rel, d: it.seconds });
+    if ("mediaSession" in navigator) {
       try {
-        navigator.mediaSession.setPositionState({ duration: a.duration, playbackRate: a.playbackRate, position: Math.min(a.currentTime, a.duration) });
+        navigator.mediaSession.setPositionState({ duration: it.seconds, playbackRate: a.playbackRate, position: Math.min(rel, it.seconds) });
       } catch {
         /* ignore */
       }
     }
-    if (saveTimer.current == null && !interludeRef.current) {
+    if (saveTimer.current == null) {
       saveTimer.current = window.setTimeout(() => {
         saveTimer.current = null;
         const a2 = audioRef.current;
-        if (a2 && !a2.paused && !interludeRef.current) saveProgress({ section: curRef.current, offset: Math.floor(a2.currentTime) });
+        const seg = segRef.current;
+        if (a2 && !a2.paused && seg && seg.kind === "section") saveProgress({ section: seg.i, offset: Math.floor(Math.max(0, a2.currentTime - seg.start)) });
       }, 15000);
+    }
+    // לקראת סוף הזרם: אם בינתיים הוכנו עוד קטעים — מכינים את הזרם הבא מראש, כדי שההחלפה תהיה מיידית
+    if (m.totalSeconds - a.currentTime < 120 && !nextManifestRef.current && m.upto + 1 < b.sections.length && readyRef.current.has(m.upto + 1)) {
+      nextManifestRef.current = { ...m, items: [] }; // מסמן "בטעינה"
+      loadManifest(m.upto + 1)
+        .then((n) => {
+          nextManifestRef.current = n.items.length ? n : null;
+        })
+        .catch(() => (nextManifestRef.current = null));
     }
   };
   const onPlay = () => {
@@ -445,22 +459,24 @@ export default function Player({ id }: { id: string }) {
     pausedAt.current = Date.now();
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
     const a = audioRef.current;
-    if (a && !a.ended && !interludeRef.current) saveProgress({ section: curRef.current, offset: Math.floor(a.currentTime) });
+    const seg = segRef.current;
+    if (a && !a.ended && seg && seg.kind === "section" && manifestRef.current) saveProgress({ section: seg.i, offset: Math.floor(Math.max(0, a.currentTime - seg.start)) });
   };
 
   // ---- Media Session ----
   const goNext = useCallback(() => {
     const b = bookRef.current;
-    if (b && curRef.current + 1 < b.sections.length) playSection(curRef.current + 1);
-  }, [playSection]);
+    if (b && curRef.current + 1 < b.sections.length) seekToSection(curRef.current + 1);
+  }, [seekToSection]);
   const goPrev = useCallback(() => {
     const a = audioRef.current;
-    if (a && a.currentTime > 4 && !interludeRef.current) {
-      a.currentTime = 0;
+    const seg = segRef.current;
+    if (a && seg && manifestRef.current && a.currentTime - seg.start > 4) {
+      a.currentTime = seg.start;
       return;
     }
-    playSection(Math.max(0, curRef.current - 1));
-  }, [playSection]);
+    seekToSection(Math.max(0, curRef.current - 1));
+  }, [seekToSection]);
   useEffect(() => {
     if (!("mediaSession" in navigator) || !book) return;
     const ms = navigator.mediaSession;
@@ -486,12 +502,12 @@ export default function Player({ id }: { id: string }) {
     set("seekbackward", (d) => (a.currentTime = Math.max(0, a.currentTime - (d.seekOffset || 15))));
     set("seekforward", (d) => (a.currentTime = Math.min(a.duration || 0, a.currentTime + (d.seekOffset || 15))));
     set("seekto", (d) => {
-      if (d.seekTime != null) a.currentTime = d.seekTime;
+      if (d.seekTime != null) a.currentTime = (manifestRef.current ? segRef.current?.start ?? 0 : 0) + d.seekTime;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book, cur, goNext, goPrev]);
 
-  // ---- חזרה למסך: אם הקטע נגמר והבא לא התחיל בזמן שהמסך היה כבוי — ממשיכים ----
+  // ---- חזרה למסך: אם הזרם נגמר והבא לא התחיל בזמן שהמסך היה כבוי — ממשיכים ----
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
@@ -499,12 +515,12 @@ export default function Player({ id }: { id: string }) {
       if (a && a.paused && wantNext.current != null) {
         const next = wantNext.current;
         wantNext.current = null;
-        playSection(next);
+        playFrom(next);
       }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [playSection]);
+  }, [playFrom]);
 
   // ---- גלילה אוטומטית לפסקה הנוכחית ----
   const paraIdx = useMemo(() => {
@@ -571,28 +587,41 @@ export default function Player({ id }: { id: string }) {
     if (!a.src) {
       if (pendingRecap.current) {
         pendingRecap.current = false;
-        await playInterlude("recap", "next"); // אחרי התקציר מתחיל הקטע הנוכחי
+        await playRecap(); // אחרי התקציר מתחיל הזרם מהמקום שנעצר
         return;
       }
-      await playSection(curRef.current, { startAt: progRef.current?.offset || 0 });
+      await playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
       return;
     }
     if (a.paused) {
       if (wantNext.current != null || a.ended) {
-        // הקטע נגמר והבא לא התחיל (מסך כבוי) — ממשיכים ממנו
-        const next = wantNext.current ?? curRef.current + 1;
+        // הזרם נגמר והבא לא התחיל (מסך כבוי) — ממשיכים ממנו
+        const next = wantNext.current ?? (manifestRef.current ? manifestRef.current.upto + 1 : curRef.current + 1);
         wantNext.current = null;
-        await playSection(next);
+        await playFrom(Math.min(next, (bookRef.current?.sections.length ?? 1) - 1));
         return;
       }
       if (pausedAt.current && Date.now() - pausedAt.current > 60_000 && !interludeRef.current) a.currentTime = Math.max(0, a.currentTime - 5);
       await a.play();
     } else a.pause();
   }
+  function seekInSection(ratio: number) {
+    const a = audioRef.current;
+    const seg = segRef.current;
+    if (!a) return;
+    if (manifestRef.current && seg) a.currentTime = seg.start + ratio * seg.seconds;
+    else if (pos.d) a.currentTime = ratio * pos.d;
+  }
   function jumpToParagraph(i: number, k: number, paras: string[]) {
     const before = paras.slice(0, k).reduce((n, p) => n + p.length + 2, 0);
     const total = paras.reduce((n, p) => n + p.length + 2, 0) || 1;
-    playSection(i, { ratio: before / total });
+    seekToSection(i, before / total);
+  }
+  function restartStream(autoplay: boolean) {
+    const a = audioRef.current;
+    const seg = segRef.current;
+    const offset = a && seg && manifestRef.current && seg.kind === "section" ? Math.max(0, a.currentTime - seg.start) : progRef.current?.offset || 0;
+    if (a?.src) playFrom(curRef.current, { autoplay, offset });
   }
   function changeLang(l: "he" | "orig") {
     if (l === lang) return;
@@ -602,10 +631,9 @@ export default function Player({ id }: { id: string }) {
     // "מוכן" הוא לפי שפה — מתחילים לספור מחדש, וההכנה ברקע עוברת לשפה הזו
     setReady(new Set());
     readyRef.current = new Set();
-    urls.current.clear();
     setPrepErr("");
     const was = !audioRef.current?.paused;
-    playSection(curRef.current, { autoplay: was });
+    if (audioRef.current?.src) playFrom(curRef.current, { autoplay: was });
     refreshText().then(() => runPrepare()).catch(() => {});
   }
   function changeVoice(v: string) {
@@ -620,12 +648,9 @@ export default function Player({ id }: { id: string }) {
     }
     setSheet(null);
     cache.current.clear();
-    urls.current.clear();
-    questionUrls.current.clear();
     setReady(new Set());
     refreshText().then(runPrepare);
-    const was = !audioRef.current?.paused;
-    if (audioRef.current?.src) playSection(curRef.current, { autoplay: was });
+    restartStream(!audioRef.current?.paused);
   }
   async function preview(v: string) {
     setPreviewing(v);
@@ -865,11 +890,9 @@ export default function Player({ id }: { id: string }) {
 
       <footer className="playerBar">
         <div className="bar" onClick={(e) => {
-          const a = audioRef.current;
-          if (!a || !pos.d) return;
+          if (!pos.d) return;
           const r = e.currentTarget.getBoundingClientRect();
-          const ratio = 1 - (e.clientX - r.left) / r.width; // RTL
-          a.currentTime = ratio * pos.d;
+          seekInSection(1 - (e.clientX - r.left) / r.width); // RTL
         }}>
           <div style={{ width: pos.d ? `${(pos.t / pos.d) * 100}%` : "0%" }} />
         </div>
@@ -929,7 +952,7 @@ export default function Player({ id }: { id: string }) {
             const n = c.end - c.start + 1;
             const r = book.sections.slice(c.start, c.end + 1).filter((s) => ready.has(s.i)).length;
             return (
-              <div key={ci} className={"card clickable row" + (book.sections[cur]?.chapter === ci ? " on" : "")} onClick={() => { setSheet(null); playSection(c.start); }}>
+              <div key={ci} className={"card clickable row" + (book.sections[cur]?.chapter === ci ? " on" : "")} onClick={() => { setSheet(null); seekToSection(c.start); }}>
                 <div className="grow" dir="auto">{c.title}</div>
                 <span className="muted small">{r === n ? "✓" : `${r}/${n}`}</span>
               </div>

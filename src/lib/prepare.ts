@@ -17,6 +17,10 @@ const P = {
   preview: (id: string, voice: string) => `books/${id}/preview/${voice}-${isKokoroVoice(voice) ? KOKORO_VERSION : TTS_VERSION}.mp3`,
 };
 
+/** תיקיות השמע והשאלות — לבניית הזרם הרציף. */
+export const audioDirFor = (book: Book, voice: string, lang: "he" | "en") => P.audioDir(book.id, voice, lang);
+export const questionDirFor = (book: Book, voice: string) => `books/${book.id}/questions/${voice}-${TTS_VERSION}-p6/`;
+
 /** שפת השמע בפועל: "he" או (במצב מקור, בספר שאינו עברי) "en". */
 export function audioLang(book: Book, lang: "he" | "orig" | undefined): "he" | "en" {
   return lang === "orig" && book.lang !== "he" ? "en" : "he";
@@ -111,7 +115,23 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
     await store.remove(P.lock(id));
   }
   ready = [...readySet].sort((a, b) => a - b);
-  if (lang === "he") await mergeHeMap(book, ready);
+  if (lang === "he") {
+    await mergeHeMap(book, ready);
+    // שאלות סוף פרק לפרקים שכבר מוכנים כולם בטווח — כדי שייכנסו לזרם הרציף בלי המתנה
+    if (progress.study !== false && Date.now() - start < budget) {
+      const qDir = questionDirFor(book, voice);
+      const have = new Set((await store.listPaths(qDir)).map((p) => p.slice(qDir.length)));
+      for (let c = book.sections[range[0]]?.chapter ?? 0; c < book.chapters.length; c++) {
+        const ch = book.chapters[c];
+        if (ch.end > range[1]) break;
+        let all = true;
+        for (let i = ch.start; i <= ch.end; i++) if (!readySet.has(i)) all = false;
+        if (!all || have.has(`${c}.mp3`) || c === book.chapters.length - 1) continue;
+        if (Date.now() - start > budget) break;
+        await chapterQuestion(book, c, voice).catch((e) => console.warn("question", c, (e as Error).message));
+      }
+    }
+  }
   return { ready, range, total: book.sections.length, busy: false, generated, lang, error };
 }
 

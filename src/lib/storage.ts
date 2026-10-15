@@ -125,3 +125,54 @@ export async function remove(p: string) {
 }
 
 export const storageMode = useBlob ? "blob" : "local";
+
+export interface FileInfo {
+  path: string;
+  size: number;
+  url: string;
+}
+
+/** רשימת קבצים עם גודל — לבניית זרם רציף (הגודל קובע את משך השמע ב-MP3 בקצב קבוע). */
+export async function listFiles(prefix: string): Promise<FileInfo[]> {
+  if (useBlob) {
+    const out: FileInfo[] = [];
+    let cursor: string | undefined;
+    do {
+      const r = await list({ prefix, cursor, limit: 1000 });
+      out.push(...r.blobs.map((b) => ({ path: b.pathname, size: b.size, url: b.url })));
+      cursor = r.hasMore ? r.cursor : undefined;
+    } while (cursor);
+    return out;
+  }
+  const paths = await listPaths(prefix);
+  const out: FileInfo[] = [];
+  for (const p of paths) {
+    try {
+      const st = await fs.stat(localPath(p));
+      out.push({ path: p, size: st.size, url: `/api/local-file?p=${encodeURIComponent(p)}` });
+    } catch {
+      /* נעלם בינתיים */
+    }
+  }
+  return out;
+}
+
+/** חלק מקובץ (בייטים start עד end כולל) — לזרם עם Range. */
+export async function readRange(info: FileInfo, start: number, end: number): Promise<Buffer> {
+  if (useBlob) {
+    const r = await fetch(info.url, { headers: { Range: `bytes=${start}-${end}` }, cache: "no-store" });
+    if (!r.ok && r.status !== 206) throw new Error("קריאת חלק מקובץ נכשלה: " + r.status);
+    const buf = Buffer.from(await r.arrayBuffer());
+    // אם השרת התעלם מה-Range והחזיר הכול — חותכים בעצמנו
+    return r.status === 206 ? buf : buf.subarray(start, end + 1);
+  }
+  const fh = await fs.open(localPath(info.path), "r");
+  try {
+    const len = end - start + 1;
+    const buf = Buffer.alloc(len);
+    const { bytesRead } = await fh.read(buf, 0, len, start);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}

@@ -14,8 +14,27 @@ page.on("response", (r) => r.status() >= 400 && errors.push(`http ${r.status()} 
 const log = (...a) => console.log("[e2e]", ...a);
 const audio = () => page.evaluate(() => { const a = document.querySelector("audio"); return { src: a?.src?.slice(-50), paused: a?.paused, t: a?.currentTime, d: a?.duration }; });
 const playing = () => page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.currentTime > 0.2; }, null, { timeout: 60000 });
-const finish = () => page.evaluate(() => { const a = document.querySelector("audio"); a.currentTime = a.duration - 0.15; });
+// מדלגים לסוף הקטע הנוכחי בתוך הזרם הרציף (לפי המניפסט)
+const finish = () => page.evaluate(async () => {
+  const a = document.querySelector("audio");
+  const u = new URL(a.src);
+  if (!u.pathname.includes("/stream")) { a.currentTime = a.duration - 0.15; return; }
+  const pw = localStorage.getItem("app_pw") || "";
+  const id = u.pathname.split("/")[3];
+  const m = await fetch(`/api/books/${id}/stream/manifest?${u.searchParams.toString()}`, { headers: { "x-app-password": pw } }).then((r) => r.json());
+  const it = m.items.filter((x) => x.start <= a.currentTime + 0.05).pop();
+  a.currentTime = it.start + it.seconds - 0.15;
+});
 const header = () => page.textContent(".readerTop");
+// הקטע n מתנגן בפועל: מסומן על המסך וגם נמצא בתוך הזרם שבנגן
+const atSection = (n) => page.waitForFunction((n) => {
+  const a = document.querySelector("audio");
+  if (document.querySelector(".sec.cur")?.id !== "s-" + n || !a || a.paused) return false;
+  const u = new URL(a.src);
+  if (!u.pathname.includes("/stream")) return true;
+  const from = Number(u.searchParams.get("from")), upto = Number(u.searchParams.get("upto"));
+  return from <= n && n <= upto;
+}, n, { timeout: 60000 });
 
 await page.goto(BASE);
 await page.waitForSelector("text=הספרים שלי");
@@ -47,32 +66,30 @@ if (!heText.startsWith("[דמה]")) throw new Error("expected Hebrew (mock) text
 
 // קפיצה בלחיצה על פסקה בקטע אחר
 await page.click("#s-3 .para");
-await page.waitForFunction(() => { const a = document.querySelector("audio"); return document.querySelector(".sec.cur")?.id === "s-3" && a && !a.paused && a.src.endsWith("3.mp3"); }, null, { timeout: 60000 });
+await atSection(3);
 log("tap-to-jump ok:", await audio());
 
 // סוף פרק: שאלה (מצב לימוד שקט פועל כברירת מחדל) ואז הקטע הבא
 const chapterEnd = await page.evaluate(() => { const first = document.querySelector("section"); const ids = [...first.querySelectorAll(".sec")].map((d) => Number(d.id.slice(2))); return Math.max(...ids); });
 await page.click(`#s-${chapterEnd} .para`);
-await page.waitForFunction((n) => document.querySelector(".sec.cur")?.id === "s-" + n, chapterEnd, { timeout: 60000 });
-await playing();
+await atSection(chapterEnd);
 await finish();
 await page.waitForSelector("text=שאלה לסיום הפרק", { timeout: 60000 });
 log("chapter question shown");
 await playing();
 await finish();
 // השקט לחשיבה נמצא בתוך קובץ השאלה; בסופו ממשיכים מיד לקטע הבא
-await page.waitForFunction((n) => document.querySelector(".sec.cur")?.id === "s-" + (n + 1), chapterEnd, { timeout: 30000 });
-await playing();
+await atSection(chapterEnd + 1);
 log("continued to next chapter:", await page.$eval(".sec.cur", (el) => el.id));
 
 // מעבר למקור
 await page.click("text=מקור");
-await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.src.includes("%2Fen%2F"); }, null, { timeout: 60000 });
+await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.src.includes("lang=orig"); }, null, { timeout: 60000 });
 const orig = await page.$eval(".sec.cur .para", (el) => el.textContent);
 if (orig.startsWith("[דמה]")) throw new Error("orig should be English");
 log("orig ok");
 await page.click("text=עברית");
-await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && a.src.includes("%2Fhe%2F"); }, null, { timeout: 60000 });
+await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && a.src.includes("lang=he"); }, null, { timeout: 60000 });
 
 // בחירת קול: פותחים את הגיליון ובוחרים קול אחר
 await page.click("text=🗣");
@@ -80,7 +97,7 @@ await page.waitForSelector(".sheetTitle");
 const before = (await audio()).src;
 await page.click(".sheet .card:nth-of-type(2) button:last-child");
 await page.waitForFunction(() => !document.querySelector(".sheet"), null, { timeout: 10000 });
-await page.waitForFunction((b) => { const a = document.querySelector("audio"); return a && a.src.slice(-50) !== b && a.src.includes("%2Fhe%2F"); }, before, { timeout: 60000 });
+await page.waitForFunction((b) => { const a = document.querySelector("audio"); return a && a.src.slice(-50) !== b && a.src.includes("lang=he") && !a.src.includes("voice=Puck"); }, before, { timeout: 60000 });
 log("voice changed:", await audio());
 
 // השהיה, שמירת מקום, חזרה

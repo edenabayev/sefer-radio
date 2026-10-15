@@ -86,3 +86,22 @@ export interface Note {
   title: string;
   text: string;
 }
+
+export interface StreamItem {
+  kind: "section" | "question";
+  i: number;
+  chapter: number;
+  bytes: number;
+  start: number;
+  seconds: number;
+}
+export interface Manifest {
+  from: number;
+  upto: number;
+  qs: number[];
+  lang: "he" | "en";
+  voice: string;
+  items: StreamItem[];
+  totalSeconds: number;
+  totalBytes: number;
+}
