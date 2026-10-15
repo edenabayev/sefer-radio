@@ -29,15 +29,19 @@ await page.waitForSelector(".bigPlay:not([disabled])");
 await page.waitForSelector(".sec");
 log("book page:", (await header()).slice(0, 60));
 
-// ההכנה מראש מתחילה לבד — מחכים שלפחות קטע אחד יהיה מוכן
-await page.waitForFunction(() => document.querySelectorAll(".sec:not(.notReady)").length >= 1, null, { timeout: 90000 });
-log("prepared sections:", await page.$$eval(".sec:not(.notReady)", (els) => els.length));
+// לפני ▶ הראשון לא מכינים כלום (כלל עדן)
+await page.waitForTimeout(3000);
+if ((await page.$$eval(".sec:not(.notReady)", (els) => els.length)) !== 0) throw new Error("nothing should be prepared before first play");
 
 // השמעה + פסקה מסומנת
 await page.click(".bigPlay");
 await playing();
 await page.waitForSelector(".para.now", { timeout: 30000 });
 log("playing, highlighted para in section", await page.$eval(".sec.cur", (el) => el.id));
+
+// מרגע ▶ הראשון ההכנה ברקע רצה — מחכים שכל הקטעים יהיו מוכנים (ספר קצר במצב דמה)
+await page.waitForFunction(() => document.querySelectorAll(".sec:not(.notReady)").length >= 1, null, { timeout: 90000 });
+log("prepared sections:", await page.$$eval(".sec:not(.notReady)", (els) => els.length));
 const heText = await page.$eval(".sec.cur .para", (el) => el.textContent);
 if (!heText.startsWith("[דמה]")) throw new Error("expected Hebrew (mock) text in current section");
 

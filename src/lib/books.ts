@@ -53,6 +53,7 @@ export interface Progress {
   voice?: string; // קול עברי (Gemini)
   voiceEn?: string; // קול אנגלי (Kokoro) להאזנה במקור
   rate?: number;
+  startedAt?: string; // ▶ ראשון — לפני זה לא מכינים כלום (כלל עדן: שום דבר לא נוצר סתם)
   updatedAt: string;
 }
 
@@ -403,7 +404,10 @@ export async function answerQuestion(book: Book, i: number, audio: Buffer, mimeT
 // ---------- התקדמות ----------
 
 export async function getProgress(id: string): Promise<Progress> {
-  return (await store.readJSON<Progress>(P.progress(id))) ?? { section: 0, offset: 0, lang: "he", study: true, updatedAt: "" };
+  const p = (await store.readJSON<Progress>(P.progress(id))) ?? { section: 0, offset: 0, lang: "he", study: true, updatedAt: "" };
+  // ספרים שנשמעו לפני שהכלל "כלום לפני ▶ ראשון" נכנס (15.10.2026) — נחשבים כאילו התחילו
+  if (!p.startedAt && p.updatedAt && p.updatedAt < "2026-10-15T03:00:00Z") p.startedAt = p.updatedAt;
+  return p;
 }
 
 export async function setProgress(id: string, p: Partial<Progress>) {

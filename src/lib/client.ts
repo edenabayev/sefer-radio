@@ -68,6 +68,7 @@ export interface Progress {
   voice?: string;
   voiceEn?: string;
   rate?: number;
+  startedAt?: string;
   updatedAt: string;
 }
 export interface AudioResult {

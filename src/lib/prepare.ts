@@ -33,10 +33,12 @@ export async function readyMap(book: Book, voice: string, lang: "he" | "en" = "h
     .sort((a, b) => a - b);
 }
 
-/** טווח ההכנה: מהקטע הנוכחי עד סוף הפרק (current + CHAPTERS_AHEAD). */
-export function targetRange(book: Book, section: number): [number, number] {
+/** טווח ההכנה. עברית (גוגל, עולה כסף): מהקטע הנוכחי עד סוף הפרק (current + CHAPTERS_AHEAD).
+ *  אנגלית (Kokoro, כמעט חינם אבל איטי): מהקטע הנוכחי עד סוף הספר. */
+export function targetRange(book: Book, section: number, lang: "he" | "en" = "he"): [number, number] {
   const sec = book.sections[Math.min(section, book.sections.length - 1)];
   if (!sec) return [0, -1];
+  if (lang === "en") return [section, book.sections.length - 1];
   const lastChapter = Math.min(book.chapters.length - 1, sec.chapter + CHAPTERS_AHEAD);
   const end = book.chapters[lastChapter]?.end ?? book.sections.length - 1;
   return [section, end];
@@ -60,8 +62,10 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   // מכינים בשפה שהמאזין בחר: אם הוא במצב "מקור" — שמע באנגלית (Kokoro), ולא מתרגמים לעברית בכלל
   const lang = audioLang(book, opts.lang ?? progress.lang);
   const voice = lang === "en" ? (isKokoroVoice(opts.voice) ? opts.voice : progress.voiceEn || KOKORO_DEFAULT) : (!isKokoroVoice(opts.voice) && opts.voice) || progress.voice || VOICE;
-  const range = targetRange(book, from);
   let ready = await readyMap(book, voice, lang);
+  // כלום לא נוצר לפני ▶ הראשון בספר
+  if (!progress.startedAt) return { ready, range: [from, from - 1], total: book.sections.length, busy: false, generated: 0, lang };
+  const range = targetRange(book, from, lang);
   const readySet = new Set(ready);
   const todo: number[] = [];
   for (let i = range[0]; i <= range[1]; i++) if (!readySet.has(i)) todo.push(i);

@@ -20,8 +20,9 @@ export async function GET(req: Request) {
     const books = await listBooks();
     const withProgress = await Promise.all(books.map(async (b) => ({ b, p: await getProgress(b.id) })));
     const dayAgo = Date.now() - 3 * 24 * 3600 * 1000;
+    // רק ספרים שהתחילו להאזין להם (▶ ראשון) ושנגעו בהם בשלושת הימים האחרונים — העלאה לבדה לא מתחילה כלום
     const active = withProgress
-      .filter(({ b, p }) => (p.updatedAt && new Date(p.updatedAt).getTime() > dayAgo) || new Date(b.createdAt).getTime() > dayAgo)
+      .filter(({ p }) => !!p.startedAt && !!p.updatedAt && new Date(p.updatedAt).getTime() > dayAgo)
       .sort((x, y) => (x.p.updatedAt || x.b.createdAt) < (y.p.updatedAt || y.b.createdAt) ? 1 : -1);
     const done: Record<string, number> = {};
     for (const { b } of active) {

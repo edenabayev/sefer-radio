@@ -304,14 +304,17 @@ export default function Player({ id }: { id: string }) {
         if (opts.autoplay !== false) await a.play();
         setLoading("");
         setProg((p) => (p ? { ...p, section: i } : p));
-        saveProgress({ section: i, offset: opts.startAt ?? 0, lang: l });
+        const first = opts.autoplay !== false && !progRef.current?.startedAt;
+        if (first) setProg((p) => (p ? { ...p, startedAt: new Date().toISOString() } : p));
+        saveProgress({ section: i, offset: opts.startAt ?? 0, lang: l, ...(first ? { startedAt: new Date().toISOString() } : {}) });
+        if (first) window.setTimeout(runPrepare, 1500); // מרגע ▶ הראשון — ההכנה ברקע מתחילה
         prefetchAhead(i);
       } catch (e) {
         setLoading("");
         setErr((e as Error).message || "תקלה בהשמעה");
       }
     },
-    [fetchAudio, rate, saveProgress],
+    [fetchAudio, rate, saveProgress, runPrepare],
   );
 
   // ---- קטעי ביניים: תקציר בחזרה / שאלה בסוף פרק ----
