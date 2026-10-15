@@ -37,37 +37,26 @@ function toPcm16(f32: Float32Array, rate: number): Buffer {
   return out;
 }
 
-/** מפרק לפסקאות/משפטים של עד ~500 תווים — המודל עובד הכי טוב על קטעים קצרים. */
-function chunks(text: string, max = 500): string[] {
-  const out: string[] = [];
-  for (const para of text.split(/\n+/)) {
-    let buf = "";
-    for (const s of para.split(/(?<=[.!?;:])\s+/)) {
-      if (!s.trim()) continue;
-      if (buf.length + s.length + 1 > max && buf) {
-        out.push(buf);
-        buf = "";
-      }
-      buf += (buf ? " " : "") + s;
-    }
-    if (buf.trim()) out.push(buf);
-  }
-  return out;
-}
-
-export async function kokoroTts(text: string, voice = KOKORO_DEFAULT, dtype?: KokoroDtype): Promise<{ pcm: Buffer; stats: { loadMs: number; genMs: number; audioSec: number } }> {
+/** הקראה ב-Kokoro דרך צינור ההקראה: ניקוי (קיצורים, מספרים) → משפטים → חתיכות של ~250 תווים (המודל ממהר מעבר ל-450 יחידות הגייה)
+ *  → קיצוץ שקט → הפסקות לפי גבול (משפט / פסקה / כותרת; בלי הפסקה בחיתוך כפוי באמצע משפט). */
+export async function kokoroTts(text: string, voice = KOKORO_DEFAULT, opts: { dtype?: KokoroDtype; headingFirst?: boolean } = {}): Promise<{ pcm: Buffer; stats: { loadMs: number; genMs: number; audioSec: number } }> {
   if (MOCK) return { pcm: fakePcm(Math.max(2, Math.min(12, text.length / 150))), stats: { loadMs: 0, genMs: 0, audioSec: 0 } };
+  const { narrate, normalizeForSpeech } = await import("./narrate");
   const t0 = Date.now();
-  const m = await model(dtype);
+  const m = await model(opts.dtype);
   const loadMs = Date.now() - t0;
   const t1 = Date.now();
-  const parts: Buffer[] = [];
   let audioSec = 0;
-  const gap = Buffer.alloc(Math.round(SAMPLE_RATE * 0.35) * 2); // נשימה קצרה בין משפטים
-  for (const c of chunks(text)) {
-    const a = await m.generate(c, { voice });
-    audioSec += a.audio.length / a.sampling_rate;
-    parts.push(toPcm16(a.audio, a.sampling_rate), gap);
-  }
-  return { pcm: Buffer.concat(parts), stats: { loadMs, genMs: Date.now() - t1, audioSec } };
+  const pcm = await narrate(
+    normalizeForSpeech(text, "en"),
+    "en",
+    { targetChars: 250, maxChars: 400 },
+    async (chunk) => {
+      const a = await m.generate(chunk, { voice });
+      audioSec += a.audio.length / a.sampling_rate;
+      return toPcm16(a.audio, a.sampling_rate);
+    },
+    { headingFirst: opts.headingFirst },
+  );
+  return { pcm, stats: { loadMs, genMs: Date.now() - t1, audioSec } };
 }

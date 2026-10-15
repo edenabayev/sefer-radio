@@ -67,6 +67,26 @@ const P = {
   answer: (id: string, i: number, hash: string) => `books/${id}/answers/${i}/${hash}.mp3`,
 };
 
+/** כותרת פרק כמו שמקריאים אותה: "CHAPTER IV" → "Chapter 4" (המספר הופך למילים בצינור ההקראה). */
+export function spokenHeading(title: string, lang: "he" | "en"): string {
+  const t = title.replace(/^#\s*/, "").trim();
+  if (lang !== "en") return t;
+  const roman = (r: string) => {
+    const v: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+    let n = 0;
+    for (let k = 0; k < r.length; k++) {
+      const a = v[r[k]];
+      const b = v[r[k + 1]] ?? 0;
+      n += a < b ? -a : a;
+    }
+    return n;
+  };
+  const m = t.match(/^(chapter|book|part|section|letter)\s+([IVXLCDM]+)\b(.*)$/i);
+  if (m) return m[1][0].toUpperCase() + m[1].slice(1).toLowerCase() + " " + roman(m[2].toUpperCase()) + m[3];
+  // כותרת כולה באותיות גדולות → אותיות רגילות (אחרת המנוע מאיית)
+  return /^[A-Z0-9 ,.'’:;\-]+$/.test(t) && t.length > 3 ? t.charAt(0) + t.slice(1).toLowerCase() : t;
+}
+
 export function toMeta(b: Book): BookMeta {
   return {
     id: b.id,
@@ -336,8 +356,13 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
   const p = P.audio(book.id, i, effLang, voice);
   const url = await store.exists(p);
   if (url) return { url, text, lang: effLang, cached: true };
+  // כותרת הפרק נקראת לפני הקטע הראשון שלו — רק כשהכותרת באותה שפה כמו ההקראה
+  const ch = book.chapters[sec.chapter];
+  const sameLang = effLang === "he" ? book.lang === "he" : book.lang !== "he";
+  const heading = ch && ch.start === i && sameLang && ch.title && !/^(התחלה|START)$/i.test(ch.title) ? spokenHeading(ch.title, effLang) : "";
+  const spoken = heading ? heading + "\n\n" + text : text;
   // אנגלית: Kokoro (קוד פתוח, רץ כאן על המעבד, בלי עלות לפי תו). עברית: Gemini.
-  const pcm = effLang === "en" ? (await (await import("./kokoro")).kokoroTts(text, voice)).pcm : await tts(text, effLang, voice);
+  const pcm = effLang === "en" ? (await (await import("./kokoro")).kokoroTts(spoken, voice, { headingFirst: !!heading })).pcm : await tts(spoken, effLang, voice, { headingFirst: !!heading });
   const mp3 = await pcm16ToMp3(pcm, SAMPLE_RATE);
   const newUrl = await store.writeBytes(p, mp3, "audio/mpeg");
   return { url: newUrl, text, lang: effLang, cached: false };

@@ -16,7 +16,7 @@ export async function GET(req: Request) {
     const voice = sp.get("voice") || "am_michael";
     const t0 = Date.now();
     const dtype = (sp.get("dtype") as KokoroDtype) || undefined;
-    const { pcm, stats } = await kokoroTts(text, voice, dtype);
+    const { pcm, stats } = await kokoroTts(text, voice, { dtype });
     const mp3 = await pcm16ToMp3(pcm, SAMPLE_RATE);
     const url = await store.writeBytes(`probe/kokoro-${voice}-${Date.now()}.mp3`, mp3, "audio/mpeg");
     return ok({ dtype: dtype || "q8", ...stats, totalMs: Date.now() - t0, chars: text.length, rtf: +(stats.genMs / 1000 / stats.audioSec).toFixed(2), url, cpus: (await import("os")).cpus().length, mem: process.memoryUsage().rss });

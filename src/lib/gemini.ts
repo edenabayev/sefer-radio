@@ -218,30 +218,33 @@ async function ttsChunk(part: string, voice: string): Promise<Buffer> {
   return Buffer.concat(parts.map((p) => wavToPcm(Buffer.from(p.inlineData!.data!, "base64"))));
 }
 
-export async function tts(text: string, lang: string, voice = VOICE): Promise<Buffer> {
-  void lang; // Gemini מזהה את השפה לבד
+/** הקראה ב-Gemini דרך צינור ההקראה: ניקוי → משפטים → חתיכות עד 3000 בייט מיושרות לפסקאות → קיצוץ שקט → הפסקות לפי גבול. */
+export async function tts(text: string, lang: string, voice = VOICE, opts: { headingFirst?: boolean } = {}): Promise<Buffer> {
   const clean = cleanForTts(text);
   if (!clean) return fakePcm(0.5);
   if (MOCK) {
     const secs = Math.max(2, Math.min(12, text.length / 150));
     return fakePcm(secs);
   }
-  const bufs: Buffer[] = [];
-  for (const part of splitForTts(clean)) {
+  const { narrate, normalizeForSpeech } = await import("./narrate");
+  const l = lang === "en" ? "en" : "he";
+  const synth = async (part: string): Promise<Buffer> => {
     try {
-      bufs.push(await ttsChunk(part, voice));
+      return await ttsChunk(part, voice);
     } catch (e) {
       // ניסיון שני: בלי ניקוד ובחתיכות קטנות יותר (טקסט מנוקד כבד למנוע)
       const plain = stripNiqqud(part);
       const smaller = splitForTts(plain, 1500);
       try {
+        const bufs: Buffer[] = [];
         for (const sp of smaller) bufs.push(await ttsChunk(sp, voice));
+        return Buffer.concat(bufs);
       } catch {
         throw e;
       }
     }
-  }
-  return Buffer.concat(bufs);
+  };
+  return narrate(normalizeForSpeech(clean, l), l, { targetChars: 2600, maxChars: 3000, measure: bytes }, synth, opts);
 }
 
 export const PDF_CHUNK_PAGES = 25;
