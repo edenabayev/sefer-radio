@@ -12,7 +12,7 @@ export interface Extraction {
   status: "pending" | "done" | "error";
   totalPages: number;
   nextPage: number; // העמוד הבא לחילוץ (1-based)
-  markdown: string; // הטקסט שחולץ עד כה
+  markdown: string; // ישן: הטקסט שחולץ נשמר בתוך book.json. חדש: ריק, והטקסט בקובץ extracted.md
   error?: string;
 }
 
@@ -64,6 +64,8 @@ const P = {
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
+  extracted: (id: string) => `books/${id}/extracted.md`,
+  extractLock: (id: string) => `books/${id}/extract.lock.json`,
   answer: (id: string, i: number, hash: string) => `books/${id}/answers/${i}/${hash}.mp3`,
 };
 
@@ -269,10 +271,26 @@ export async function createFromUpload(url: string, filename: string, pathname?:
 }
 
 /** בנייה מחדש של הקטעים מקובץ המקור (אחרי שיפור בניקוי/חלוקה). שומר את המזהה; שמע ותרגום ישנים נשארים לפי מספר קטע. */
+/** הטקסט שחולץ מה-PDF עד כה (בקובץ נפרד; ספרים ישנים — בתוך book.json). */
+async function extractedMarkdown(book: Book): Promise<string> {
+  if (book.extraction?.markdown) return book.extraction.markdown;
+  return (await store.readText(P.extracted(book.id))) ?? "";
+}
+
 export async function rebuildBook(id: string): Promise<Book> {
   const book = await getBook(id);
   if (!book) throw new Error("אין ספר כזה");
-  if (book.source.type !== "upload" || book.source.kind === "pdf") return book;
+  if (book.source.type !== "upload") return book;
+  if (book.source.kind === "pdf") {
+    // בנייה מחדש מהטקסט שכבר חולץ (בלי לקרוא את ה-PDF שוב) — למשל אחרי שיפור בזיהוי כותרות
+    const md = await extractedMarkdown(book);
+    if (!md) return book;
+    const b = buildSections(markdownToParagraphs(md), book.title);
+    book.chapters = b.chapters;
+    book.sections = b.sections;
+    await saveBook(book);
+    return book;
+  }
   const data = await readSource(book.source.url, book.source.pathname);
   if (book.source.kind === "txt") {
     const text = cleanSourceText(data.toString("utf8"));
@@ -290,35 +308,44 @@ export async function rebuildBook(id: string): Promise<Book> {
   return book;
 }
 
-/** צעד חילוץ אחד (עד PDF_CHUNK_PAGES עמודים). מחזיר את הספר המעודכן. */
-export async function extractStep(id: string): Promise<Book> {
+/** צעד חילוץ אחד (עד PDF_CHUNK_PAGES עמודים). רץ מהלקוח כשהספר פתוח וגם מה-cron ברקע; נעילה מונעת כפילות. */
+export async function extractStep(id: string): Promise<{ book: Book; busy: boolean }> {
   const book = await getBook(id);
   if (!book) throw new Error("אין ספר כזה");
   const ex = book.extraction;
-  if (!ex || ex.status === "done") return book;
-  if (book.source.type === "gutenberg" || !book.source.url) return book;
-  const from = ex.nextPage;
-  const to = Math.min(ex.totalPages, from + PDF_CHUNK_PAGES - 1);
+  if (!ex || ex.status === "done") return { book, busy: false };
+  if (book.source.type === "gutenberg" || !book.source.url) return { book, busy: false };
+  const lock = await store.readJSON<{ until: string }>(P.extractLock(id));
+  if (lock && new Date(lock.until).getTime() > Date.now()) return { book, busy: true };
+  await store.writeJSON(P.extractLock(id), { until: new Date(Date.now() + 150_000).toISOString() });
   try {
-    const pdf = await readSource(book.source.url, book.source.pathname);
-    const md = await extractPdfPages(pdf, from, to);
-    ex.markdown = (ex.markdown ? ex.markdown + "\n\n" : "") + md;
-    ex.nextPage = to + 1;
-    if (ex.nextPage > ex.totalPages) ex.status = "done";
-    ex.error = undefined;
-  } catch (e) {
-    ex.status = "error";
-    ex.error = String((e as Error)?.message || e);
+    const from = ex.nextPage;
+    const to = Math.min(ex.totalPages, from + PDF_CHUNK_PAGES - 1);
+    let markdown = await extractedMarkdown(book);
+    try {
+      const pdf = await readSource(book.source.url, book.source.pathname);
+      const md = await extractPdfPages(pdf, from, to);
+      markdown = (markdown ? markdown + "\n\n" : "") + md;
+      ex.nextPage = to + 1;
+      if (ex.nextPage > ex.totalPages) ex.status = "done";
+      ex.error = undefined;
+    } catch (e) {
+      ex.status = "error";
+      ex.error = String((e as Error)?.message || e);
+    }
+    // הטקסט שחולץ נשמר בקובץ נפרד (לא בתוך book.json, שנקרא בכל בקשה) — וכך לעולם לא מחלצים את אותו PDF פעמיים
+    await store.writeBytes(P.extracted(id), markdown, "text/markdown; charset=utf-8");
+    ex.markdown = "";
+    // בונים מחדש את הקטעים מכל מה שחולץ עד כה — כך אפשר להתחיל להאזין לפני שהספר כולו נקרא
+    const built = buildSections(markdownToParagraphs(markdown), book.title);
+    book.chapters = built.chapters;
+    book.sections = built.sections;
+    if (book.lang === "other" && markdown.length > 500) book.lang = detectLang(markdown);
+    await saveBook(book);
+    return { book, busy: false };
+  } finally {
+    await store.remove(P.extractLock(id));
   }
-  // בונים מחדש את הקטעים מכל מה שחולץ עד כה — כך אפשר להתחיל להאזין לפני שהספר כולו נקרא
-  const paras = markdownToParagraphs(ex.markdown);
-  const built = buildSections(paras, book.title);
-  book.chapters = built.chapters;
-  book.sections = built.sections;
-  if (book.lang === "other" && ex.markdown.length > 500) book.lang = detectLang(ex.markdown);
-  // ex.markdown נשאר שמור בספר — כך לעולם לא מחלצים את אותו PDF פעמיים.
-  await saveBook(book);
-  return book;
 }
 
 // ---------- תרגום ----------

@@ -71,6 +71,7 @@ export default function Player({ id }: { id: string }) {
   const pendingSeek = useRef<number | null>(null);
   const interludeRef = useRef<{ kind: "recap" } | { kind: "question"; chapter: number } | null>(null);
   const pendingRecap = useRef(false);
+  const recapToken = useRef(0); // לביטול תזכורת שעוד נטענת (לחיצה נוספת על ▶ או "דלג")
   const lastManualScroll = useRef(0);
   const pausedAt = useRef(0);
   const liveHandle = useRef<LiveHandle | null>(null);
@@ -198,7 +199,8 @@ export default function Player({ id }: { id: string }) {
         if (!ex || ex.status !== "pending") break;
         setLoading(`קורא את הקובץ… עמוד ${ex.nextPage} מתוך ${ex.totalPages}`);
         try {
-          await api(`/api/books/${id}/extract-step`, { method: "POST" });
+          const r = await api<{ busy?: boolean }>(`/api/books/${id}/extract-step`, { method: "POST" });
+          if (r.busy) await new Promise((res) => setTimeout(res, 15000)); // השרת קורא ברקע — מחכים ובודקים שוב
           const fresh = await api<BookFull>(`/api/books/${id}`);
           if (stop) break;
           setBook(fresh);
@@ -326,9 +328,11 @@ export default function Player({ id }: { id: string }) {
     const a = audioRef.current;
     if (!a) return;
     const i = curRef.current;
+    const token = ++recapToken.current;
     try {
-      setLoading("מכין תזכורת קצרה…");
+      setLoading("מכין תזכורת קצרה… (▶ מדלג)");
       const r = await api<{ text: string; url: string }>(`/api/books/${id}/recap?upto=${i}`);
+      if (token !== recapToken.current) return; // בוטל בינתיים
       setLoading("");
       interludeRef.current = { kind: "recap" };
       manifestRef.current = null;
@@ -338,12 +342,37 @@ export default function Player({ id }: { id: string }) {
       a.playbackRate = rate;
       await a.play();
     } catch {
+      if (token !== recapToken.current) return;
       setLoading("");
       interludeRef.current = null;
       setInterlude(null);
       playFrom(i, { offset: progRef.current?.offset || 0 });
     }
   }, [id, rate, playFrom]);
+
+  /** דילוג על התזכורת / השאלה — ישר לספר. */
+  const skipInterlude = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    recapToken.current++;
+    const il = interludeRef.current;
+    interludeRef.current = null;
+    setInterlude(null);
+    setLoading("");
+    if (!il || il.kind === "recap") {
+      playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
+      return;
+    }
+    // שאלה בתוך הזרם: קופצים לפריט הבא
+    const m = manifestRef.current;
+    const seg = segRef.current;
+    if (m && seg) {
+      const k = m.items.indexOf(seg);
+      const next = m.items[k + 1];
+      if (next) a.currentTime = next.start;
+      else playFrom(Math.min(m.upto + 1, (bookRef.current?.sections.length ?? 1) - 1));
+    }
+  }, [playFrom]);
 
   // ---- אירועי הנגן ----
   const onEnded = () => {
@@ -585,9 +614,14 @@ export default function Player({ id }: { id: string }) {
     const a = audioRef.current;
     if (!a) return;
     if (!a.src) {
+      if (loading.startsWith("מכין תזכורת")) {
+        // לחיצה נוספת בזמן שהתזכורת נטענת — מוותרים עליה ומתחילים את הספר
+        skipInterlude();
+        return;
+      }
       if (pendingRecap.current) {
         pendingRecap.current = false;
-        await playRecap(); // אחרי התקציר מתחיל הזרם מהמקום שנעצר
+        await playRecap(); // אחרי התזכורת מתחיל הזרם מהמקום שנעצר
         return;
       }
       await playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
@@ -857,7 +891,10 @@ export default function Player({ id }: { id: string }) {
         {prepErr && !err && <p className="err small">ההכנה ברקע נעצרה: {prepErr}</p>}
         {interlude && (
           <div className="interlude">
-            <div className="pill">{interlude === "recap" ? "תזכורת: מה שמעת עד עכשיו" : "שאלה לסיום הפרק — רגע לחשוב, ואז ממשיכים"}</div>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div className="pill">{interlude === "recap" ? "תזכורת: מה שמעת עד עכשיו" : "שאלה לסיום הפרק — רגע לחשוב, ואז ממשיכים"}</div>
+              <button className="ghost sm" onClick={skipInterlude}>דלג ⏭</button>
+            </div>
             <div>{interludeText}</div>
           </div>
         )}

@@ -48,8 +48,11 @@ export function toParagraphs(text: string): string[] {
 const HEADING_RE =
   /^(?:(?:CHAPTER|BOOK|PART|LETTER|SECTION|Chapter|Book|Part|Letter|Section)\s+(?:[IVXLCDM]+|\d+|[A-Z][a-z]+)\b.*|[IVXLCDM]{1,7}\.?|\d{1,3}\.?|(?:פרק|חלק|ספר|שער|מאמר|אגרת|מכתב)\s+\S+.*)$/;
 
+/** שורת דובר ("VASISTHA said:", "רמה שאל:") — חילוץ PDF מסמן אותה ככותרת, אבל היא לא פרק. */
+const SPEAKER_RE = /:\s*$|\b(said|replied|continued|asked|answered|אמר|אמרה|השיב|השיבה|שאל|שאלה|המשיך)\b\s*:?$/i;
+
 export function isHeading(p: string): boolean {
-  if (p.startsWith("# ")) return true; // כותרת מסומנת (מ-EPUB או מחילוץ PDF)
+  if (p.startsWith("# ")) return !SPEAKER_RE.test(p.trim()); // כותרת מסומנת (מ-EPUB או מחילוץ PDF)
   if (p.length > 90) return false;
   if (HEADING_RE.test(p.trim())) return true;
   // שורה קצרה כולה באותיות גדולות (כותרת באנגלית)
@@ -70,6 +73,7 @@ export interface Section {
 
 const TARGET = 1400; // תווים לקטע — כ-1.5–2 דקות דיבור
 const MAX = 2000;
+const MIN_CHAPTER = 1200; // פרק קצר מזה (פחות מקטע אחד) הוא כנראה כותרת-משנה — מצטרף לקודם
 
 /** מחלק רשימת פסקאות (עם כותרות) לפרקים ולקטעים בגודל נוח להאזנה. */
 export function buildSections(paragraphs: string[], fallbackTitle = "התחלה"): { chapters: Chapter[]; sections: Section[] } {
@@ -120,11 +124,11 @@ export function buildSections(paragraphs: string[], fallbackTitle = "התחלה"
   }
   flushChapter();
 
-  // פרקים זעירים (תוצאה של כותרות-משנה) — מאחדים לפרק הקודם
+  // פרקים זעירים (תוצאה של כותרות-משנה, פסוקים, שורות דובר) — מאחדים לפרק הקודם
   const merged: Chapter[] = [];
   for (const c of chapters) {
     const len = sections.slice(c.start, c.end + 1).reduce((a, s) => a + s.text.length, 0);
-    if (merged.length && len < 600) {
+    if (merged.length && len < MIN_CHAPTER) {
       merged[merged.length - 1].end = c.end;
       for (let i = c.start; i <= c.end; i++) sections[i].chapter = merged.length - 1;
     } else {
@@ -217,5 +221,9 @@ function decodeEntities(s: string) {
 /** פלט של Gemini בחילוץ PDF: כותרות מסומנות ב-"## " */
 export function markdownToParagraphs(md: string): string[] {
   const paras = toParagraphs(md);
-  return paras.map((p) => (/^#{1,6} /.test(p) ? "# " + p.replace(/^#{1,6} /, "").trim() : p));
+  return paras.map((p) => {
+    if (!/^#{1,6} /.test(p)) return p;
+    const t = p.replace(/^#{1,6} /, "").trim();
+    return SPEAKER_RE.test(t) ? t : "# " + t; // שורת דובר שסומנה ככותרת → פסקה רגילה
+  });
 }

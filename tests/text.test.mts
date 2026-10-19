@@ -22,7 +22,7 @@ const hb = buildSections(toParagraphs(heb));
 console.log("heb lang", detectLang(heb), "chapters", hb.chapters.map((c) => c.title), "sections", hb.sections.length);
 if (detectLang(heb) !== "he" || hb.chapters.length !== 2) throw new Error("hebrew split failed");
 
-const md = `## Chapter One\n\n${para(1)}\n\n${para(2)}\n\n## Chapter Two\n\n${para(3)}\n\n${para(4)}`;
+const md = `## Chapter One\n\n${para(1)}\n\n${para(2)}\n\n${para(5)}\n\n## Chapter Two\n\n${para(3)}\n\n${para(4)}\n\n${para(6)}`;
 const mp = buildSections(markdownToParagraphs(md));
 console.log("md chapters", mp.chapters.map((c) => c.title));
 if (mp.chapters.length !== 2 || mp.chapters[0].title !== "Chapter One") throw new Error("md headings failed");
@@ -31,8 +31,8 @@ if (mp.chapters.length !== 2 || mp.chapters[0].title !== "Chapter One") throw ne
   const zip = new JSZip();
   zip.file("META-INF/container.xml", `<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>`);
   zip.file("OEBPS/content.opf", `<package><metadata><dc:title>Epub Test</dc:title><dc:creator>Someone</dc:creator></metadata><manifest><item id="c1" href="c1.xhtml"/><item id="c2" href="c2.xhtml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>`);
-  zip.file("OEBPS/c1.xhtml", `<html><body><h1>Chapter 1</h1><p>${para(1)}</p><p>${para(2)}</p></body></html>`);
-  zip.file("OEBPS/c2.xhtml", `<html><body><h1>Chapter 2</h1><p>${para(3)}</p><p>${para(4)}</p></body></html>`);
+  zip.file("OEBPS/c1.xhtml", `<html><body><h1>Chapter 1</h1><p>${para(1)}</p><p>${para(2)}</p><p>${para(5)}</p></body></html>`);
+  zip.file("OEBPS/c2.xhtml", `<html><body><h1>Chapter 2</h1><p>${para(3)}</p><p>${para(4)}</p><p>${para(6)}</p></body></html>`);
   const buf = await zip.generateAsync({ type: "nodebuffer" });
   const e = await epubToParagraphs(buf);
   const eb = buildSections(e.paragraphs);
@@ -40,3 +40,13 @@ if (mp.chapters.length !== 2 || mp.chapters[0].title !== "Chapter One") throw ne
   if (eb.chapters.length !== 2) throw new Error("epub chapters failed");
   console.log("ALL TEXT TESTS OK");
 })();
+
+// שורות דובר מחילוץ PDF אינן פרקים; פרקים זעירים מתאחדים
+{
+  const { buildSections: bs, markdownToParagraphs: mp2, isHeading } = await import("@/lib/text");
+  const md = "## Chapter One\n\n" + "Intro text. ".repeat(150) + "\n\n## VASIṢṬHA said:\n\nRāma, listen. " + "More words here. ".repeat(100) + "\n\n## III:12 VASIṢṬHA continued:\n\n" + "Even more. ".repeat(100) + "\n\n## Chapter Two\n\n" + "Second chapter text. ".repeat(150);
+  const b2 = bs(mp2(md));
+  if (b2.chapters.length !== 2 || b2.chapters[1].title !== "Chapter Two") throw new Error("speaker lines must not become chapters: " + b2.chapters.map((c) => c.title).join(" | "));
+  if (isHeading("# רמה שאל:")) throw new Error("hebrew speaker line");
+  console.log("speaker-line test ok");
+}

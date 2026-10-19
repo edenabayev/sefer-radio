@@ -2,6 +2,7 @@
 import { ok, fail } from "@/lib/api";
 import { listBooks, getProgress } from "@/lib/books";
 import { prepare } from "@/lib/prepare";
+import { extractStep } from "@/lib/books";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800; // Kokoro על המעבד: כ-3 דקות לקטע אנגלי
@@ -25,6 +26,20 @@ export async function GET(req: Request) {
       .filter(({ p }) => !!p.startedAt && !!p.updatedAt && new Date(p.updatedAt).getTime() > dayAgo)
       .sort((x, y) => (x.p.updatedAt || x.b.createdAt) < (y.p.updatedAt || y.b.createdAt) ? 1 : -1);
     const done: Record<string, number> = {};
+    // קריאת PDF ברקע: ספר שהועלה או נשמע ב-3 הימים האחרונים ועוד לא נקרא עד הסוף (זול — סנטים לספר)
+    const reading = withProgress.filter(({ b, p }) => b.extraction?.status === "pending" && ((p.updatedAt && new Date(p.updatedAt).getTime() > dayAgo) || new Date(b.createdAt).getTime() > dayAgo));
+    for (const { b } of reading) {
+      let pages = 0;
+      while (budget - (Date.now() - start) > 120_000) {
+        const r = await extractStep(b.id).catch((e) => {
+          console.warn("cron extract", b.id, (e as Error).message);
+          return null;
+        });
+        if (!r || r.busy || r.book.extraction?.status !== "pending") break;
+        pages += 25;
+      }
+      done["read:" + b.id] = pages;
+    }
     for (const { b } of active) {
       const left = budget - (Date.now() - start);
       if (left < 30_000) break;
