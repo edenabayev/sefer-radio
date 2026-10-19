@@ -19,7 +19,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     // עם upto — מחזירים בדיוק את הזרם שבכתובת (לבדיקות ולסנכרון), לא "כל מה שמוכן עכשיו"
     const upto = sp.get("upto");
     const fixed = upto != null ? { upto: Number(upto), qs: (sp.get("qs") || "").split(",").filter(Boolean).map(Number) } : undefined;
-    return ok(await buildManifest(book, from, lang, voice, study, fixed));
+    const max = Number(sp.get("max")) || undefined; // שניות — לזרם הבא שנטען מראש לזיכרון
+    return ok(await buildManifest(book, from, lang, voice, study, fixed, max));
   } catch (e) {
     return fail(e);
   }

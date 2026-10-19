@@ -46,7 +46,7 @@ async function files(book: Book, voice: string, lang: "he" | "en") {
 }
 
 /** מה אפשר להשמיע ברצף מהקטע הזה: עד הקטע הראשון שעוד לא מוכן (או 4 שעות). */
-export async function buildManifest(book: Book, from: number, lang: "he" | "en", voice: string, study: boolean, fixed?: { upto: number; qs: number[] }): Promise<Manifest> {
+export async function buildManifest(book: Book, from: number, lang: "he" | "en", voice: string, study: boolean, fixed?: { upto: number; qs: number[] }, maxSeconds = MAX_SECONDS): Promise<Manifest> {
   const { sections, questions } = await files(book, voice, lang);
   const items: StreamItem[] = [];
   const qs: number[] = [];
@@ -57,7 +57,7 @@ export async function buildManifest(book: Book, from: number, lang: "he" | "en",
   const fixedQs = fixed ? new Set(fixed.qs) : null;
   for (let i = from; i <= last; i++) {
     const f = sections.get(i);
-    if (!f || t > MAX_SECONDS) break;
+    if (!f || t > maxSeconds) break;
     const c = book.sections[i].chapter;
     items.push({ kind: "section", i, chapter: c, bytes: f.size, start: t, seconds: f.size / BYTES_PER_SEC });
     t += f.size / BYTES_PER_SEC;

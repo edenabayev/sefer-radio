@@ -66,6 +66,8 @@ export default function Player({ id }: { id: string }) {
   const cache = useRef(new Map<string, Promise<AudioResult>>());
   const manifestRef = useRef<Manifest | null>(null); // הזרם שמתנגן עכשיו: אילו קטעים ואיפה כל אחד מתחיל
   const nextManifestRef = useRef<Manifest | null>(null); // הזרם הבא, מוכן מראש לקראת סוף הנוכחי
+  const nextBlobRef = useRef<{ manifest: Manifest; url: string } | null>(null); // הזרם הבא כולו בזיכרון — ההחלפה בלי רשת (מסך כבוי)
+  const curBlobUrl = useRef<string | null>(null);
   const segRef = useRef<StreamItem | null>(null); // הפריט (קטע/שאלה) שמתנגן ברגע זה
   const wantNext = useRef<number | null>(null); // קטע שהיה אמור להתחיל ולא התחיל (מסך כבוי) — נשלים כשחוזרים
   const pendingSeek = useRef<number | null>(null);
@@ -240,10 +242,19 @@ export default function Player({ id }: { id: string }) {
 
   // ---- הזרם הרציף: קובץ שמע אחד ארוך מכל מה שמוכן, כדי שלא יהיה "סוף שיר" כל שתי דקות ----
   const loadManifest = useCallback(
-    (from: number) =>
-      api<Manifest>(`/api/books/${id}/stream/manifest?from=${from}&lang=${langRef.current}&voice=${encodeURIComponent(audioVoice())}&study=${progRef.current?.study === false ? 0 : 1}`),
+    (from: number, maxSeconds?: number) =>
+      api<Manifest>(
+        `/api/books/${id}/stream/manifest?from=${from}&lang=${langRef.current}&voice=${encodeURIComponent(audioVoice())}&study=${progRef.current?.study === false ? 0 : 1}${maxSeconds ? `&max=${maxSeconds}` : ""}`,
+      ),
     [id],
   );
+  /** מחליפים מקור: משחררים זרם קודם שהיה בזיכרון, ושומרים את כתובת הזרם לבדיקות/סנכרון. */
+  const setSource = (a: HTMLAudioElement, src: string, streamHref: string) => {
+    if (curBlobUrl.current) URL.revokeObjectURL(curBlobUrl.current);
+    curBlobUrl.current = src.startsWith("blob:") ? src : null;
+    a.dataset.stream = streamHref;
+    a.src = src;
+  };
   const streamUrl = useCallback(
     (m: Manifest) => `/api/books/${id}/stream?from=${m.from}&upto=${m.upto}&qs=${m.qs.join(",")}&lang=${langRef.current}&voice=${encodeURIComponent(m.voice)}`,
     [id],
@@ -285,7 +296,9 @@ export default function Player({ id }: { id: string }) {
         const first = m.items[0];
         const t0 = opts.ratio != null ? opts.ratio * first.seconds : Math.min(opts.offset ?? 0, Math.max(0, first.seconds - 2));
         pendingSeek.current = t0;
-        a.src = streamUrl(m);
+        if (nextBlobRef.current) URL.revokeObjectURL(nextBlobRef.current.url);
+        nextBlobRef.current = null;
+        setSource(a, streamUrl(m), streamUrl(m));
         a.playbackRate = rate;
         if (t0 > 0) a.currentTime = t0;
         segRef.current = first;
@@ -338,7 +351,7 @@ export default function Player({ id }: { id: string }) {
       manifestRef.current = null;
       setInterlude("recap");
       setInterludeText(r.text);
-      a.src = r.url;
+      setSource(a, r.url, "");
       a.playbackRate = rate;
       await a.play();
     } catch {
@@ -393,12 +406,14 @@ export default function Player({ id }: { id: string }) {
     }
     const nm = nextManifestRef.current;
     if (nm && nm.from === next && nm.items.length) {
-      // הזרם הבא כבר הוכן מראש — מחליפים באותו רגע, בלי רשת
+      // הזרם הבא כבר הוכן מראש — מחליפים באותו רגע; אם כל הקובץ כבר בזיכרון, בלי שום רשת (מסך כבוי)
+      const nb = nextBlobRef.current;
+      nextBlobRef.current = null;
       manifestRef.current = nm;
       nextManifestRef.current = null;
       curRef.current = next;
       segRef.current = nm.items[0];
-      a.src = streamUrl(nm);
+      setSource(a, nb && nb.manifest === nm ? nb.url : streamUrl(nm), streamUrl(nm));
       a.playbackRate = rate;
       a.play().catch(() => {
         wantNext.current = next;
@@ -469,11 +484,17 @@ export default function Player({ id }: { id: string }) {
       }, 15000);
     }
     // לקראת סוף הזרם: אם בינתיים הוכנו עוד קטעים — מכינים את הזרם הבא מראש, כדי שההחלפה תהיה מיידית
-    if (m.totalSeconds - a.currentTime < 120 && !nextManifestRef.current && m.upto + 1 < b.sections.length && readyRef.current.has(m.upto + 1)) {
+    if (m.totalSeconds - a.currentTime < 150 && !nextManifestRef.current && m.upto + 1 < b.sections.length && readyRef.current.has(m.upto + 1)) {
       nextManifestRef.current = { ...m, items: [] }; // מסמן "בטעינה"
-      loadManifest(m.upto + 1)
-        .then((n) => {
+      // הזרם הבא מוגבל לשעה כדי שאפשר יהיה להוריד אותו כולו לזיכרון עכשיו, בזמן שהשמע מתנגן והטלפון ער
+      loadManifest(m.upto + 1, 3600)
+        .then(async (n) => {
           nextManifestRef.current = n.items.length ? n : null;
+          if (!n.items.length) return;
+          const r = await fetch(streamUrl(n), { headers: { "x-app-password": localStorage.getItem("app_pw") || "" } });
+          if (!r.ok) return;
+          const blob = await r.blob();
+          if (nextManifestRef.current === n) nextBlobRef.current = { manifest: n, url: URL.createObjectURL(blob) };
         })
         .catch(() => (nextManifestRef.current = null));
     }

@@ -12,12 +12,12 @@ page.on("console", (m) => m.type() === "error" && errors.push("console: " + m.te
 page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
 page.on("response", (r) => r.status() >= 400 && errors.push(`http ${r.status()} ${r.url()}`));
 const log = (...a) => console.log("[e2e]", ...a);
-const audio = () => page.evaluate(() => { const a = document.querySelector("audio"); return { src: a?.src?.slice(-50), paused: a?.paused, t: a?.currentTime, d: a?.duration }; });
+const audio = () => page.evaluate(() => { const a = document.querySelector("audio"); return { src: (a?.dataset.stream || a?.src)?.slice(-50), paused: a?.paused, t: a?.currentTime, d: a?.duration }; });
 const playing = () => page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.currentTime > 0.2; }, null, { timeout: 60000 });
 // מדלגים לסוף הקטע הנוכחי בתוך הזרם הרציף (לפי המניפסט)
 const finish = () => page.evaluate(async () => {
   const a = document.querySelector("audio");
-  const u = new URL(a.src);
+  const u = new URL(a.dataset.stream || a.src, location.href);
   if (!u.pathname.includes("/stream")) { a.currentTime = a.duration - 0.15; return; }
   const pw = localStorage.getItem("app_pw") || "";
   const id = u.pathname.split("/")[3];
@@ -30,7 +30,7 @@ const header = () => page.textContent(".readerTop");
 const atSection = (n) => page.waitForFunction((n) => {
   const a = document.querySelector("audio");
   if (document.querySelector(".sec.cur")?.id !== "s-" + n || !a || a.paused) return false;
-  const u = new URL(a.src);
+  const u = new URL(a.dataset.stream || a.src, location.href);
   if (!u.pathname.includes("/stream")) return true;
   const from = Number(u.searchParams.get("from")), upto = Number(u.searchParams.get("upto"));
   return from <= n && n <= upto;
@@ -84,12 +84,12 @@ log("continued to next chapter:", await page.$eval(".sec.cur", (el) => el.id));
 
 // מעבר למקור
 await page.click("text=מקור");
-await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && a.src.includes("lang=orig"); }, null, { timeout: 60000 });
+await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && (a.dataset.stream || a.src).includes("lang=orig"); }, null, { timeout: 60000 });
 const orig = await page.$eval(".sec.cur .para", (el) => el.textContent);
 if (orig.startsWith("[דמה]")) throw new Error("orig should be English");
 log("orig ok");
 await page.click("text=עברית");
-await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && a.src.includes("lang=he"); }, null, { timeout: 60000 });
+await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && (a.dataset.stream || a.src).includes("lang=he"); }, null, { timeout: 60000 });
 
 // בחירת קול: פותחים את הגיליון ובוחרים קול אחר
 await page.click("text=🗣");
@@ -97,7 +97,7 @@ await page.waitForSelector(".sheetTitle");
 const before = (await audio()).src;
 await page.click(".sheet .card:nth-of-type(2) button:last-child");
 await page.waitForFunction(() => !document.querySelector(".sheet"), null, { timeout: 10000 });
-await page.waitForFunction((b) => { const a = document.querySelector("audio"); return a && a.src.slice(-50) !== b && a.src.includes("lang=he") && !a.src.includes("voice=Puck"); }, before, { timeout: 60000 });
+await page.waitForFunction((b) => { const a = document.querySelector("audio"); return a && (a.dataset.stream || a.src).slice(-50) !== b && (a.dataset.stream || a.src).includes("lang=he") && !(a.dataset.stream || a.src).includes("voice=Puck"); }, before, { timeout: 60000 });
 log("voice changed:", await audio());
 
 // השהיה, שמירת מקום, חזרה
