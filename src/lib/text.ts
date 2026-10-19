@@ -49,7 +49,7 @@ const HEADING_RE =
   /^(?:(?:CHAPTER|BOOK|PART|LETTER|SECTION|Chapter|Book|Part|Letter|Section)\s+(?:[IVXLCDM]+|\d+|[A-Z][a-z]+)\b.*|[IVXLCDM]{1,7}\.?|\d{1,3}\.?|(?:פרק|חלק|ספר|שער|מאמר|אגרת|מכתב)\s+\S+.*)$/;
 
 /** שורת דובר ("VASISTHA said:", "רמה שאל:") — חילוץ PDF מסמן אותה ככותרת, אבל היא לא פרק. */
-const SPEAKER_RE = /:\s*$|\b(said|replied|continued|asked|answered|אמר|אמרה|השיב|השיבה|שאל|שאלה|המשיך)\b\s*:?$/i;
+const SPEAKER_RE = /:\s*$|\b(said|replied|continued|asked|answered|אמר|אמרה|השיב|השיבה|שאל|שאלה|המשיך|המשיכה)\b\s*:/i;
 
 export function isHeading(p: string): boolean {
   if (p.startsWith("# ")) return !SPEAKER_RE.test(p.trim()); // כותרת מסומנת (מ-EPUB או מחילוץ PDF)

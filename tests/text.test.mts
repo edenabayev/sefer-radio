@@ -48,5 +48,7 @@ if (mp.chapters.length !== 2 || mp.chapters[0].title !== "Chapter One") throw ne
   const b2 = bs(mp2(md));
   if (b2.chapters.length !== 2 || b2.chapters[1].title !== "Chapter Two") throw new Error("speaker lines must not become chapters: " + b2.chapters.map((c) => c.title).join(" | "));
   if (isHeading("# רמה שאל:")) throw new Error("hebrew speaker line");
+  if (isHeading("# RĀMA said: III:11")) throw new Error("speaker line with verse ref");
+  if (!isHeading("# The Story of Kālarātri")) throw new Error("real heading");
   console.log("speaker-line test ok");
 }
