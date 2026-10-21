@@ -29,6 +29,7 @@ export async function blueTts(text: string, voice: string, lang = "he"): Promise
     }
   }
   if (!url) throw new Error("BlueTTS לא החזיר שמע: " + sse.slice(0, 300));
-  const wav = Buffer.from(await fetch(url, { signal: AbortSignal.timeout(60000) }).then((r) => r.arrayBuffer()));
+  const ab: ArrayBuffer = await fetch(url, { signal: AbortSignal.timeout(60000) }).then((r) => r.arrayBuffer());
+  const wav = Buffer.from(new Uint8Array(ab));
   return { pcm: wavToPcm(wav), info };
 }
