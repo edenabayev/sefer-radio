@@ -199,9 +199,9 @@ export function wavToPcm(buf: Buffer, targetRate = SAMPLE_RATE): Buffer {
   return out;
 }
 
-async function ttsChunk(part: string, voice: string): Promise<Buffer> {
+export async function ttsChunk(part: string, voice: string, model = MODELS.tts): Promise<Buffer> {
   const res = await ai().models.generateContent({
-    model: MODELS.tts,
+    model,
     contents: part,
     config: {
       responseModalities: ["AUDIO"],
