@@ -18,6 +18,49 @@ export function joinBrokenParagraphs(t: string): string {
   return t.replace(/([^\s.!?:;"”’'\)\]…])[ \t]*\n[ \t]*\n\s*(?=[a-z])/g, "$1 ");
 }
 
+/** כותרות רצות: שורה קצרה שחוזרת בעמודים רבים (בספר מ-EPUB/PDF, למשל "The Catcher in the Rye" בכל מעבר עמוד).
+ *  הן נכנסות לטקסט כפסקה נפרדת — ובהקראה המספר "אומר" את שם הספר באמצע הסיפור. לא דיאלוג, לא משפט. */
+export function runningHeaders(sections: { text: string }[]): Set<string> {
+  const count = new Map<string, number>();
+  const where = new Map<string, Set<number>>();
+  sections.forEach((s, i) => {
+    for (const p of s.text.split(/\n\s*\n+/)) {
+      const k = p.replace(/\s+/g, " ").trim();
+      if (k.length < 3 || k.length > 80 || /[“”"‘’'«»„]/.test(k) || /[.!?…,;:]$/.test(k)) continue;
+      count.set(k, (count.get(k) ?? 0) + 1);
+      if (!where.has(k)) where.set(k, new Set());
+      where.get(k)!.add(i);
+    }
+  });
+  const out = new Set<string>();
+  for (const [k, n] of count) if (n >= 4 && (where.get(k)?.size ?? 0) >= 3) out.add(k);
+  return out;
+}
+
+export function stripHeaders(text: string, headers: Set<string>): string {
+  if (!headers.size) return text;
+  return text
+    .split(/\n\s*\n+/)
+    .filter((p) => !headers.has(p.replace(/\s+/g, " ").trim()))
+    .join("\n\n");
+}
+
+const headerCache = new Map<string, { n: number; set: Set<string> }>();
+/** הכותרות הרצות של ספר (נשמר בזיכרון לכל ספר, עד שמספר הקטעים משתנה). */
+export function bookHeaders(book: { id: string; sections: { text: string }[] }): Set<string> {
+  const c = headerCache.get(book.id);
+  if (c && c.n === book.sections.length) return c.set;
+  const set = runningHeaders(book.sections);
+  headerCache.set(book.id, { n: book.sections.length, set });
+  return set;
+}
+
+/** הטקסט של קטע כפי שצריך להקריא ולתרגם אותו: בלי כותרות רצות, בלי שבירת פסקה באמצע משפט, בלי רווחים כפולים. */
+export function cleanSectionText(book: { id: string; sections: { text: string }[] }, i: number): string {
+  const t = book.sections[i]?.text ?? "";
+  return joinBrokenParagraphs(stripHeaders(t, bookHeaders(book))).replace(/[ \t]{2,}/g, " ");
+}
+
 /** מסיר שורות מידע של בן־יהודה ("מעודכן לתאריך", כתובת) וכתובות אינטרנט בודדות מתחילת קובץ טקסט. */
 export function cleanSourceText(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");

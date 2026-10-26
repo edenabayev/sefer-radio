@@ -40,6 +40,9 @@ assert.ok(names[0].count >= names[names.length - 1].count, "ממוין לפי ש
 // חלק משם מורכב לא נכנס לבד: "York" מתוך "New York"
 const ny = candidateNames(["We drove to New York and then New York again. I hate New York, and New York hates me. Phil lived in New York."]).map((n) => n.name);
 assert.ok(ny.includes("New York") && !ny.includes("York"), ny.join(", "));
+// גם כשהטקסט מ-PDF עם רווחים כפולים
+const ny2 = candidateNames(["We drove to New  York and then New  York again. I hate New York, and New  York hates me. Phil lived in New   York."]).map((n) => n.name);
+assert.ok(ny2.includes("New York") && !ny2.includes("York"), ny2.join(", "));
 
 // ---------- מילון: טקסט ↔ רשומות ----------
 const gl = parseGlossary("Holden Caulfield = הולדן קולפילד // לפי התרגום\nphony → מזויף\n  Pencey -> פנסי  \nשורה בלי סימן\nphony = כפול\n\nD.B. — די.בי.");

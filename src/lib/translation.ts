@@ -6,7 +6,7 @@
 import * as store from "./storage";
 import type { Book } from "./books";
 import { researchWithSearch, genJson, usageCostUsd, MOCK, MODELS, type Usage } from "./gemini";
-import { joinBrokenParagraphs } from "./text";
+import { cleanSectionText } from "./text";
 
 export interface Translation {
   translator: string;
@@ -116,7 +116,7 @@ export function candidateNames(texts: string[], max = 50): { name: string; count
   const multi = new Map<string, number>();
   const inc = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
   for (const raw of texts) {
-    const t = raw.replace(/[’]/g, "'");
+    const t = raw.replace(/[’]/g, "'").replace(/[ \t\u00a0]+/g, " "); // טקסט מ-PDF מגיע לפעמים עם רווחים כפולים
     // מילים בודדות
     for (const m of t.matchAll(/([A-Za-z][a-z]+)(?:'s)?/g)) {
       const w = m[1];
@@ -170,7 +170,7 @@ export function styleSample(book: Book, chars = 4800): string {
   return at
     .map((k) => {
       let t = "";
-      for (let j = k; j < secs.length && t.length < per; j++) t += (t ? "\n\n" : "") + secs[j].text;
+      for (let j = k; j < secs.length && t.length < per; j++) t += (t ? "\n\n" : "") + cleanSectionText(book, secs[j].i);
       return t.slice(0, per);
     })
     .join("\n\n[…]\n\n");
@@ -360,7 +360,7 @@ export async function researchCard(book: Book, registeredRun?: string, opts: { r
   const runId = registeredRun ?? (await beginResearch(book.id));
   const dir = D.runs(book.id);
   try {
-    const texts = book.sections.map((s) => s.text);
+    const texts = book.sections.map((s) => cleanSectionText(book, s.i)); // בלי הכותרת הרצה ("The Catcher in the Rye" בכל עמוד)
     const names = candidateNames(texts.join("\n\n").length > 600_000 ? texts.slice(0, Math.ceil(texts.length / 2)) : texts);
     const sample = styleSample(book);
     // "סדר מחדש": משתמשים בדוח המחקר הקיים (בלי חיפוש חדש) — רק בונים את הכרטיס מחדש
@@ -486,7 +486,7 @@ const BASE_SYSTEM =
 
 export function translationPrompt(book: Book, i: number, card: TranslationCard | null, prevHebrew?: string | null): { system: string; prompt: string } {
   const sec = book.sections[i];
-  const source = joinBrokenParagraphs(sec.text).replace(/[ \t]{2,}/g, " "); // בלי שבירת פסקה באמצע משפט ורווחים כפולים מה-PDF
+  const source = cleanSectionText(book, i); // בלי כותרות רצות, בלי שבירת פסקה באמצע משפט ורווחים כפולים מה-PDF
   let system = BASE_SYSTEM;
   if (card) {
     const g = relevantGlossary(card.glossary, source);

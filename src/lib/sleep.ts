@@ -6,6 +6,7 @@ import type { Book, Progress } from "./books";
 import { audioDirFor, audioLang, heTexts, recap, speak } from "./prepare";
 import { BYTES_PER_SEC } from "./stream";
 import { genText, VOICE, TTS_VERSION } from "./gemini";
+import { bookHeaders } from "./text";
 
 export interface SleepStart {
   id: string; // חותמת זמן — גם שם הקובץ
@@ -136,6 +137,7 @@ export async function nightParagraphs(book: Book, session: SleepStart, end: Pos)
   const secs = await sectionSeconds(book, lang, session.voice, texts, idx);
   const rate = session.rate > 0 ? session.rate : 1;
   const t0 = new Date(session.startedAt).getTime();
+  const headers = lang === "en" ? bookHeaders(book) : new Set<string>(); // "The Catcher in the Rye" באמצע הרשימה — לא פסקה של הסיפור
   const out: NightParagraph[] = [];
   let elapsed = 0; // שניות שמע מאז נקודת ההתחלה
   for (const i of idx) {
@@ -152,6 +154,7 @@ export async function nightParagraphs(book: Book, session: SleepStart, end: Pos)
       const pStart = ratio * dur;
       const pEnd = nextRatio * dur;
       if (pEnd <= secStart || pStart >= secEnd) return; // לא התנגנה בלילה הזה
+      if (headers.has(p.replace(/\s+/g, " ").trim())) return;
       const at = t0 + ((elapsed + Math.max(0, pStart - secStart)) / rate) * 1000;
       out.push({ section: i, para: k, ratio, clock: new Date(at).toISOString(), text: p.length > 160 ? p.slice(0, 157) + "…" : p });
     });

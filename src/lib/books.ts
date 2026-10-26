@@ -6,7 +6,7 @@ import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog"
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
 import { KOKORO_VERSION, kokoroVoice } from "./kokoro-voices";
 import { pcm16ToMp3 } from "./mp3";
-import { buildSections, cleanSourceText, cleanSourceParagraphs, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
+import { buildSections, cleanSectionText, cleanSourceText, cleanSourceParagraphs, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
 export interface Extraction {
   status: "pending" | "done" | "error";
@@ -432,7 +432,8 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
   const sec = book.sections[i];
   if (!sec) throw new Error("אין קטע " + i);
   const effLang = lang === "he" ? "he" : book.lang === "he" ? "he" : "en";
-  const text = lang === "he" ? await ensureTranslation(book, i) : sec.text;
+  // במקור: בלי כותרות רצות ובלי שבירת פסקה באמצע משפט (רק לשמע חדש; קבצים קיימים לא משתנים)
+  const text = lang === "he" ? await ensureTranslation(book, i) : effLang === "en" ? cleanSectionText(book, i) : sec.text;
   if (effLang === "en") voice = kokoroVoice(voice);
   const p = P.audio(book, i, effLang, voice);
   const url = await store.exists(p);

@@ -53,3 +53,21 @@ if (mp.chapters.length !== 2 || mp.chapters[0].title !== "Chapter One") throw ne
   if (!isHeading("# The Story of Kālarātri")) throw new Error("real heading");
   console.log("speaker-line test ok");
 }
+
+// כותרות רצות (שם הספר בכל מעבר עמוד) — לא מוקראות ולא מתורגמות; דיאלוג חוזר נשאר
+{
+  const { runningHeaders, stripHeaders, cleanSectionText } = await import("../src/lib/text");
+  const secs = [
+    { text: "He came in.\n\nThe Catcher in the Rye\n\n“Yes.”\n\nShe left." },
+    { text: "“Yes.”\n\nIt was a\n\nThe Catcher in the Rye\n\nfunny thing.\n\n“Yes.”" },
+    { text: "Morning.\n\nThe Catcher in the Rye\n\n“Yes.”" },
+    { text: "Night came.\n\nThe Catcher in the Rye\n\n“Yes.”\n\n“Yes.”" },
+  ];
+  const h = runningHeaders(secs);
+  if (h.size !== 1 || !h.has("The Catcher in the Rye")) throw new Error("headers: " + [...h].join("|"));
+  if (stripHeaders(secs[0].text, h) !== "He came in.\n\n“Yes.”\n\nShe left.") throw new Error("strip");
+  const clean = cleanSectionText({ id: "hdr-test", sections: secs }, 1);
+  if (clean !== "“Yes.”\n\nIt was a funny thing.\n\n“Yes.”") throw new Error("clean: " + JSON.stringify(clean));
+  if (runningHeaders([{ text: "Chapter 1\n\nOnce." }, { text: "Chapter 2\n\nTwice." }]).size !== 0) throw new Error("unique headings are not running headers");
+  console.log("running headers ok");
+}
