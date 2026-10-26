@@ -220,9 +220,9 @@ export function structurePrompt(book: Book, report: string, names: { name: strin
     "- approach: 3 עד 5 משפטים פשוטים, למאזין, שמסבירים איך המתרגם הזה עובד. אם יש ביקורת מרכזית על התרגום — משפט אחד שמתאר אותה (בלי לשנות בגללה את ההנחיות).\n" +
     "- instructions: 8 עד 15 הנחיות קונקרטיות שמתארות את השיטה של המתרגם הנבחר כפי שהיא: המשלב, בחירות המילים הידועות שלו (כולל מילות סלנג שהוא משתמש בהן), " +
     "הקול של המספר, קללות, ביטויים חוזרים ואיך לתרגם אותם בעקביות, שמות, ניבים, קצב המשפטים. כל הנחיה במשפט או שניים.\n" +
-    "- glossary: מילון קבוע. (א) השמות והמקומות החוזרים מהרשימה, בכתיב עברי עקבי — כפי שבתרגום הנבחר אם ידוע; " +
+    "- glossary: מילון קבוע. (א) כל השמות והמקומות מהרשימה שמופיעים 5 פעמים ומעלה (וגם פחות, אם הם חשובים), בכתיב עברי עקבי — כפי שבתרגום הנבחר אם ידוע; " +
     "(ב) לפחות 10 ביטויים, מילים טעונות וקללות שחוזרים אצל המספר (חפש אותם בקטעים מהספר), עם תרגום עקבי ברוח המתרגם. " +
-    "השדה en — בדיוק כפי שהצורה מופיעה בטקסט המקור. note — 'לפי התרגום של …' רק אם הדוח מבסס זאת, אחרת 'הצעה'. עד 70 ערכים.\n" +
+    "השדה en — בדיוק כפי שהצורה מופיעה בטקסט המקור. note — 'לפי התרגום של …' רק אם המילה העברית הזו מופיעה בדוח כבחירה של המתרגם, אחרת 'הצעה'. עד 90 ערכים.\n" +
     "- confidence: high אם נמצא תרגום ומקורות טובים על השיטה שלו; medium אם יש תרגום אבל מעט מידע על השיטה; low אם אין תרגום."
   );
 }
@@ -275,6 +275,16 @@ function mockCard(book: Book, names: { name: string; count: number }[]): CardJso
 
 const clean = (s: unknown, max = 4000) => (typeof s === "string" ? s.replace(/\u0000/g, "").trim().slice(0, max) : "");
 
+/** "לפי התרגום של…" רק כשהצורה העברית באמת מופיעה בדוח המחקר; אחרת זו הצעה שלנו (כדי שהכרטיס לא ייחס למתרגם מה שלא נמצא). */
+export function verifyNotes(glossary: GlossaryEntry[], report: string): GlossaryEntry[] {
+  const words = (t: string) => t.replace(/[^\u0590-\u05FFa-zA-Z'׳״"\s-]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
+  return glossary.map((g) => {
+    if (!g.note || !/לפי/.test(g.note)) return g;
+    const ok = words(g.he).every((w) => report.includes(w));
+    return ok ? g : { ...g, note: "הצעה ברוח התרגום" };
+  });
+}
+
 export function normalizeCard(j: CardJson): Omit<TranslationCard, "id" | "createdAt" | "source" | "sources" | "report"> {
   const instructions = Array.isArray(j.instructions) ? j.instructions.map((x) => clean(x, 600)).filter(Boolean).join("\n") : clean(j.instructions, 6000);
   const seen = new Set<string>();
@@ -293,7 +303,7 @@ export function normalizeCard(j: CardJson): Omit<TranslationCard, "id" | "create
     model: clean(j.model, 600) || undefined,
     approach: clean(j.approach, 2000),
     instructions,
-    glossary: glossary.slice(0, 80),
+    glossary: glossary.slice(0, 100),
     confidence: conf,
   };
 }
@@ -331,7 +341,9 @@ export async function researchCard(book: Book, registeredRun?: string, opts: { r
     const usage: Usage[] = [r.usage];
     const j = await genJson<CardJson>(structurePrompt(book, r.text, names, sample), STRUCTURE_SYSTEM, CARD_SCHEMA, mockCard(book, names), undefined, (u) => usage.push(u));
     const cost = { usd: Math.round(usageCostUsd(usage) * 10000) / 10000, searches: usage.reduce((n, u) => n + u.searches, 0) };
-    const card = await saveCard(book.id, { ...normalizeCard(j), source: "research", sources: r.sources.slice(0, 15), report: r.text.slice(0, 30000), cost });
+    const norm = normalizeCard(j);
+    norm.glossary = verifyNotes(norm.glossary, r.text);
+    const card = await saveCard(book.id, { ...norm, source: "research", sources: r.sources.slice(0, 15), report: r.text.slice(0, 30000), cost });
     await store.writeJSON(`${dir}${runId}.done.json`, { at: new Date().toISOString(), card: card.id });
     return card;
   } catch (e) {
@@ -395,8 +407,9 @@ export async function editCard(bookId: string, edit: { instructions?: string; gl
   });
 }
 
+/** המילון כטקסט לעריכה: שורה לכל ערך. הערה מוצגת רק כשהיא אומרת משהו ("לפי התרגום של…"), לא "הצעה". */
 export function glossaryToText(g: GlossaryEntry[]): string {
-  return g.map((e) => `${e.en} = ${e.he}${e.note ? ` // ${e.note}` : ""}`).join("\n");
+  return g.map((e) => `${e.en} = ${e.he}${e.note && !e.note.startsWith("הצעה") ? ` // ${e.note}` : ""}`).join("\n");
 }
 
 export function parseGlossary(text: string): GlossaryEntry[] {

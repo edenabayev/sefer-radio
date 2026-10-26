@@ -18,6 +18,7 @@ import {
   editCard,
   AlreadyResearching,
   normalizeCard,
+  verifyNotes,
 } from "../src/lib/translation";
 import { getBook, saveBook, newTrGen, readTrGen, translationStats, ensureTranslation, cleanTranslation, heDir, heTextPath, heMapPath, trSuffix, type Book } from "../src/lib/books";
 import { audioDirFor, questionDirFor, heTexts } from "../src/lib/prepare";
@@ -114,6 +115,17 @@ assert.equal(norm.instructions, "א\nב");
 assert.deepEqual(norm.glossary, [{ en: "Holden", he: "הולדן" }]);
 assert.equal(norm.translations.length, 1);
 assert.equal(norm.confidence, "medium");
+
+// "לפי התרגום של…" רק כשהצורה העברית מופיעה בדוח
+const vn = verifyNotes(
+  [
+    { en: "phony", he: "מזויף", note: "לפי התרגום של X" },
+    { en: "for God's sake", he: "בחייאת", note: "לפי התרגום של X" },
+    { en: "Holden", he: "הולדן", note: "הצעה" },
+  ],
+  "בתרגום של X, phony תורגם כ'מזויף'.",
+);
+assert.deepEqual(vn.map((g) => g.note), ["לפי התרגום של X", "הצעה ברוח התרגום", "הצעה"]);
 
 // ---------- נתיבים ודורות ----------
 assert.equal(heDir(book), "books/test-tcard/he/");
