@@ -472,3 +472,133 @@ h2 {
   font-size: 15px;
   white-space: nowrap;
 }
+
+/* ---------- שעון שינה: חוגה ---------- */
+.sleepDial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0 8px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sleepDial svg {
+  cursor: grab;
+  overflow: visible;
+}
+.sleepDial.dragging svg {
+  cursor: grabbing;
+}
+.sleepDial .dialTrack {
+  stroke: var(--panel-2);
+}
+.sleepDial .dialArc {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 45%, transparent));
+}
+.sleepDial .dialArc.lap2 {
+  stroke: color-mix(in srgb, var(--accent) 55%, white);
+}
+.sleepDial .tick {
+  stroke: color-mix(in srgb, var(--text) 22%, transparent);
+  stroke-width: 1.5;
+}
+.sleepDial .tick.big {
+  stroke: color-mix(in srgb, var(--text) 45%, transparent);
+  stroke-width: 2.5;
+}
+.sleepDial .dialLabel {
+  fill: var(--muted);
+  font-size: 12px;
+  font-family: system-ui, sans-serif;
+}
+.sleepDial .dialValue {
+  fill: var(--text);
+  font-size: 46px;
+  font-weight: 800;
+  font-family: system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.sleepDial .dialUnit {
+  fill: var(--muted);
+  font-size: 13px;
+  font-family: system-ui, sans-serif;
+}
+.sleepDial .dialKnob {
+  fill: var(--text);
+  stroke: var(--accent);
+  stroke-width: 4;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+}
+.sleepDial.dragging .dialKnob {
+  r: 17px;
+}
+.sleepDial .dialHalo {
+  transform-origin: center;
+  transform-box: fill-box;
+}
+.sleepDial.running .dialHalo {
+  animation: dialBreathe 5s ease-in-out infinite;
+}
+@keyframes dialBreathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sleepDial.running .dialHalo {
+    animation: none;
+  }
+}
+.dialHint {
+  text-align: center;
+  min-height: 1.4em;
+}
+
+/* ---------- איפה נרדמת ---------- */
+.nightList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.nightItem {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: start;
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 10px 12px;
+  min-height: 0;
+  font-weight: 400;
+  line-height: 1.45;
+}
+.nightItem .when {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.9em;
+  padding-top: 1px;
+}
+.nightItem .what {
+  font-size: 0.95em;
+}
+.missedBox {
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}

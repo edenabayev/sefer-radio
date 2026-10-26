@@ -172,7 +172,7 @@ export async function heTexts(book: Book, idx: number[]): Promise<Record<number,
   return out;
 }
 
-async function speak(text: string, voice: string, pathNoExt: string, trailingSilenceSec = 0): Promise<string> {
+export async function speak(text: string, voice: string, pathNoExt: string, trailingSilenceSec = 0): Promise<string> {
   const audioPath = pathNoExt + ".mp3";
   const existing = await store.exists(audioPath);
   if (existing) return existing;

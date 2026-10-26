@@ -1,19 +1,29 @@
 "use client";
 // מסך ההאזנה: עמוד ספר גולל, הפסקה שמוקראת מסומנת והדף זז איתה, לחיצה על פסקה מתחילה משם,
-// נגן קבוע למטה, בחירת קול ומהירות, מצב לימוד שקט (תקציר בחזרה, שאלה בסוף פרק), ושיחה חיה.
+// נגן קבוע למטה, בחירת קול ומהירות, מצב לימוד שקט (שאלה בסוף פרק), שעון שינה עם "איפה נרדמת?", ושיחה חיה.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api, type AudioResult, type BookFull, type Manifest, type Note, type Progress, type StreamItem } from "@/lib/client";
 import { startLive, type LiveHandle, type LiveState } from "@/lib/live";
+import SleepDial from "./SleepDial";
 
 interface Voice {
   id: string;
   label: string;
 }
-type Sheet = null | "chapters" | "voice" | "aa" | "more" | "sleep" | "notes";
+type Sheet = null | "chapters" | "voice" | "aa" | "more" | "sleep" | "notes" | "night";
+type SleepTimer = { mode: "min"; endAt: number; sid?: string } | { mode: "chapter"; sid?: string };
+interface NightState {
+  pending: boolean;
+  session: { id: string; startedAt: string; section: number; offset: number } | null;
+  end?: { section: number; offset: number };
+  endedAt?: string;
+  paragraphs: { section: number; para: number; ratio: number; clock: string; text: string }[];
+}
 type Theme = "light" | "sepia" | "dark";
 const RATES = [1, 1.25, 1.5, 1.75, 2, 0.8];
-const RECAP_AFTER_MS = 6 * 3600 * 1000;
+const FADE_MS = 60_000; // בדקה האחרונה של שעון השינה הקול נחלש בהדרגה
+const hhmm = (iso?: string) => (iso ? new Date(iso).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "");
 
 function fmt(s: number) {
   if (!isFinite(s) || s < 0) s = 0;
@@ -43,7 +53,11 @@ export default function Player({ id }: { id: string }) {
   const [fontSize, setFontSize] = useState(19);
   const [interlude, setInterlude] = useState<"recap" | "question" | null>(null);
   const [interludeText, setInterludeText] = useState("");
-  const [sleepAt, setSleepAt] = useState<number | "chapter" | null>(null);
+  const [sleep, setSleep] = useState<SleepTimer | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now()); // מתעדכן כל שנייה בזמן ששעון השינה רץ
+  const [night, setNight] = useState<NightState | null>(null);
+  const [missedText, setMissedText] = useState("");
+  const [interludeTitle, setInterludeTitle] = useState("");
   const [live, setLiveState] = useState<LiveState | null>(null);
   const [transcript, setTranscript] = useState<{ role: "user" | "model"; text: string }[]>([]);
   const [deep, setDeep] = useState(false); // "לחשוב לעומק": השאלות עוברות למוח הגדול
@@ -71,9 +85,11 @@ export default function Player({ id }: { id: string }) {
   const segRef = useRef<StreamItem | null>(null); // הפריט (קטע/שאלה) שמתנגן ברגע זה
   const wantNext = useRef<number | null>(null); // קטע שהיה אמור להתחיל ולא התחיל (מסך כבוי) — נשלים כשחוזרים
   const pendingSeek = useRef<number | null>(null);
-  const interludeRef = useRef<{ kind: "recap" } | { kind: "question"; chapter: number } | null>(null);
-  const pendingRecap = useRef(false);
-  const recapToken = useRef(0); // לביטול תזכורת שעוד נטענת (לחיצה נוספת על ▶ או "דלג")
+  const interludeRef = useRef<{ kind: "recap"; resume: { section: number; offset: number } } | { kind: "question"; chapter: number } | null>(null);
+  const recapToken = useRef(0); // לביטול סיכום שעוד נטען (לחיצה נוספת על ▶ או "דלג")
+  const sleepRef = useRef<SleepTimer | null>(null);
+  const sheetRef = useRef<Sheet>(null);
+  const nightPending = useRef(false); // שעון השינה עצר — בפעם הבאה שמסתכלים על המסך נשאל "איפה נרדמת?"
   const lastManualScroll = useRef(0);
   const pausedAt = useRef(0);
   const liveHandle = useRef<LiveHandle | null>(null);
@@ -82,7 +98,6 @@ export default function Player({ id }: { id: string }) {
   const saveTimer = useRef<number | null>(null);
   const prepTimer = useRef<number | null>(null);
   const prepBusy = useRef(false);
-  const sleepTimer = useRef<number | null>(null);
 
   useEffect(() => void (bookRef.current = book), [book]);
   useEffect(() => void (curRef.current = cur), [cur]);
@@ -92,6 +107,7 @@ export default function Player({ id }: { id: string }) {
   useEffect(() => void (progRef.current = prog), [prog]);
   useEffect(() => void (readyRef.current = ready), [ready]);
   useEffect(() => void (transcriptRef.current = transcript), [transcript]);
+  useEffect(() => void (sheetRef.current = sheet), [sheet]);
   useEffect(() => {
     if (!toast) return;
     const t = window.setTimeout(() => setToast(""), 3500);
@@ -174,9 +190,9 @@ export default function Player({ id }: { id: string }) {
         const start = Math.min(p.section, Math.max(0, b.sections.length - 1));
         setCur(start);
         curRef.current = start;
-        if (p.study && start > 0 && p.updatedAt && Date.now() - new Date(p.updatedAt).getTime() > RECAP_AFTER_MS) pendingRecap.current = true;
         await refreshText();
         runPrepare();
+        loadNight(); // האם ההאזנה האחרונה נגמרה בשעון שינה?
       } catch (e) {
         setErr((e as Error).message);
       }
@@ -336,34 +352,60 @@ export default function Player({ id }: { id: string }) {
     [playFrom],
   );
 
-  // ---- תקציר בחזרה אחרי הפסקה (קובץ נפרד; בסופו מתחיל הזרם) ----
-  const playRecap = useCallback(async () => {
+  /** המקום הנוכחי בספר: קטע ושניות בתוכו. */
+  const currentPos = useCallback((): { section: number; offset: number } => {
     const a = audioRef.current;
-    if (!a) return;
-    const i = curRef.current;
-    const token = ++recapToken.current;
-    try {
-      setLoading("מכין תזכורת קצרה… (▶ מדלג)");
-      const r = await api<{ text: string; url: string }>(`/api/books/${id}/recap?upto=${i}`);
-      if (token !== recapToken.current) return; // בוטל בינתיים
-      setLoading("");
-      interludeRef.current = { kind: "recap" };
-      manifestRef.current = null;
-      setInterlude("recap");
-      setInterludeText(r.text);
-      setSource(a, r.url, "");
-      a.playbackRate = rate;
-      await a.play();
-    } catch {
-      if (token !== recapToken.current) return;
-      setLoading("");
-      interludeRef.current = null;
-      setInterlude(null);
-      playFrom(i, { offset: progRef.current?.offset || 0 });
-    }
-  }, [id, rate, playFrom]);
+    const seg = segRef.current;
+    if (a && manifestRef.current && seg && seg.kind === "section") return { section: seg.i, offset: Math.max(0, a.currentTime - seg.start) };
+    if (!a?.src || !manifestRef.current) return { section: curRef.current, offset: progRef.current?.offset || 0 };
+    return { section: curRef.current, offset: 0 };
+  }, []);
 
-  /** דילוג על התזכורת / השאלה — ישר לספר. */
+  // ---- "מה פספסתי": סיכום בעברית (קובץ נפרד; בסופו ממשיכים מהמקום ששמרנו) ----
+  const playMissed = useCallback(
+    async (resume?: { section: number; offset: number }) => {
+      const a = audioRef.current;
+      if (!a) return;
+      const at = resume ?? currentPos();
+      const token = ++recapToken.current;
+      try {
+        a.pause();
+        setLoading("מכין סיכום… (▶ מדלג)");
+        setMissedText("");
+        const r = await api<{ kind: "sleep" | "recent"; text: string; url: string }>(`/api/books/${id}/missed`, { method: "POST", body: "{}" });
+        if (token !== recapToken.current) return; // בוטל בינתיים
+        setLoading("");
+        interludeRef.current = { kind: "recap", resume: at };
+        manifestRef.current = null;
+        setInterlude("recap");
+        setInterludeTitle(r.kind === "sleep" ? "מה פספסת בזמן שישנת" : "תזכורת: מה שמעת לאחרונה");
+        setInterludeText(r.text);
+        setMissedText(r.text);
+        setSource(a, r.url, "");
+        a.playbackRate = rate;
+        a.volume = 1;
+        await a.play();
+      } catch (e) {
+        if (token !== recapToken.current) return;
+        setLoading("");
+        interludeRef.current = null;
+        setInterlude(null);
+        setErr("הסיכום לא הצליח: " + (e as Error).message);
+      }
+    },
+    [id, rate, currentPos],
+  );
+
+  /** אחרי הסיכום: ממשיכים בספר — אלא אם מסך "איפה נרדמת?" פתוח, ואז מחכים שתבחר מאיפה. */
+  function afterMissed(at: { section: number; offset: number }) {
+    if (sheetRef.current === "night") {
+      audioRef.current?.pause();
+      return;
+    }
+    playFrom(at.section, { offset: at.offset });
+  }
+
+  /** דילוג על הסיכום / השאלה — ישר לספר. */
   const skipInterlude = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
@@ -373,7 +415,8 @@ export default function Player({ id }: { id: string }) {
     setInterlude(null);
     setLoading("");
     if (!il || il.kind === "recap") {
-      playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
+      const at = il?.kind === "recap" ? il.resume : { section: curRef.current, offset: progRef.current?.offset || 0 };
+      afterMissed(at);
       return;
     }
     // שאלה בתוך הזרם: קופצים לפריט הבא
@@ -392,14 +435,20 @@ export default function Player({ id }: { id: string }) {
     const a = audioRef.current;
     const b = bookRef.current;
     if (!a || !b) return;
-    if (interludeRef.current?.kind === "recap") {
+    const il = interludeRef.current;
+    if (il?.kind === "recap") {
       interludeRef.current = null;
       setInterlude(null);
-      playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
+      afterMissed(il.resume);
       return;
     }
     const m = manifestRef.current;
     const next = m ? m.upto + 1 : curRef.current + 1;
+    // שעון שינה "עד סוף הפרק": הזרם נגמר בדיוק בסוף פרק
+    if (sleepRef.current?.mode === "chapter" && m && b.chapters[b.sections[m.upto]?.chapter]?.end === m.upto) {
+      fireSleep();
+      return;
+    }
     if (next >= b.sections.length) {
       setPlaying(false);
       return;
@@ -446,10 +495,11 @@ export default function Player({ id }: { id: string }) {
     if (!it) return;
     const prev = segRef.current;
     segRef.current = it;
+    checkSleep();
     if (it.kind === "section") {
-      if (prev && prev !== it && sleepAt === "chapter" && prev.chapter !== it.chapter) {
-        a.pause();
-        setSleepAt(null);
+      if (prev && prev !== it && sleepRef.current?.mode === "chapter" && prev.chapter !== it.chapter) {
+        fireSleep();
+        return;
       }
       if (curRef.current !== it.i) {
         curRef.current = it.i;
@@ -617,34 +667,134 @@ export default function Player({ id }: { id: string }) {
   }, []);
 
   // ---- שעון שינה ----
-  useEffect(() => {
-    if (sleepTimer.current) window.clearTimeout(sleepTimer.current);
-    if (typeof sleepAt === "number") {
-      sleepTimer.current = window.setTimeout(() => {
-        audioRef.current?.pause();
-        setSleepAt(null);
-      }, Math.max(0, sleepAt - Date.now()));
+  // נבדק גם בכל עדכון זמן של הנגן וגם בשעון של שנייה — מה שקורה קודם (מסך כבוי מאט שעונים, לא את השמע)
+  function setSleepBoth(s: SleepTimer | null) {
+    sleepRef.current = s;
+    setSleep(s);
+  }
+  function fireSleep() {
+    const s = sleepRef.current;
+    if (!s) return;
+    const pos = currentPos();
+    setSleepBoth(null);
+    const a = audioRef.current;
+    if (a) {
+      a.pause();
+      a.volume = 1;
     }
-    return () => {
-      if (sleepTimer.current) window.clearTimeout(sleepTimer.current);
-    };
-  }, [sleepAt]);
+    nightPending.current = true;
+    if (s.sid) api(`/api/books/${id}/sleep`, { method: "POST", body: JSON.stringify({ action: "fired", sid: s.sid, ...pos }) }).catch(() => {});
+  }
+  function checkSleep() {
+    const s = sleepRef.current;
+    const a = audioRef.current;
+    if (!s || s.mode !== "min" || !a) return;
+    const left = s.endAt - Date.now();
+    if (left <= 0) fireSleep();
+    else if (left < FADE_MS) a.volume = Math.max(0.05, left / FADE_MS);
+    else if (a.volume !== 1) a.volume = 1;
+  }
+  async function startSleep(minutes: number | null) {
+    const old = sleepRef.current;
+    if (old?.sid) api(`/api/books/${id}/sleep`, { method: "POST", body: JSON.stringify({ action: "cancel", sid: old.sid }) }).catch(() => {});
+    const s: SleepTimer = minutes == null ? { mode: "chapter" } : { mode: "min", endAt: Date.now() + minutes * 60_000 };
+    setSleepBoth(s);
+    setNowTick(Date.now());
+    if (minutes != null) {
+      try {
+        localStorage.setItem("sleepMinutes", String(minutes));
+      } catch {
+        /* ignore */
+      }
+    }
+    const a = audioRef.current;
+    if (a && a.paused && !live) togglePlay(); // מפעילים שעון שינה כדי להירדם עם הספר
+    const pos = currentPos();
+    try {
+      const r = await api<{ session: { id: string } }>(`/api/books/${id}/sleep`, {
+        method: "POST",
+        body: JSON.stringify({ action: "start", ...pos, lang: langRef.current, voice: audioVoice(), rate, minutes }),
+      });
+      if (sleepRef.current === s) {
+        const withSid = { ...s, sid: r.session.id } as SleepTimer;
+        setSleepBoth(withSid);
+      }
+    } catch {
+      /* בלי רישום בשרת עדיין יש טיימר; רק "איפה נרדמת?" לא יופיע */
+    }
+  }
+  function adjustSleep(minutes: number) {
+    const s = sleepRef.current;
+    if (!s) return;
+    if (minutes < 1) {
+      cancelSleep();
+      return;
+    }
+    setSleepBoth({ ...s, mode: "min", endAt: Date.now() + minutes * 60_000 } as SleepTimer);
+    setNowTick(Date.now());
+    const a = audioRef.current;
+    if (a) a.volume = 1;
+  }
+  function cancelSleep() {
+    const s = sleepRef.current;
+    setSleepBoth(null);
+    const a = audioRef.current;
+    if (a) a.volume = 1;
+    if (s?.sid) api(`/api/books/${id}/sleep`, { method: "POST", body: JSON.stringify({ action: "cancel", sid: s.sid }) }).catch(() => {});
+  }
+  useEffect(() => {
+    if (sleep?.mode !== "min") return;
+    const t = window.setInterval(() => {
+      setNowTick(Date.now());
+      checkSleep();
+    }, 1000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sleep]);
+
+  // ---- "איפה נרדמת?" — רק אחרי שעון שינה ----
+  async function loadNight(): Promise<boolean> {
+    try {
+      const n = await api<NightState>(`/api/books/${id}/sleep`);
+      if (n.pending && n.paragraphs.length) {
+        setNight(n);
+        setMissedText("");
+        setSheet("night");
+        return true;
+      }
+    } catch {
+      /* אין לילה */
+    }
+    return false;
+  }
+  function resolveNight() {
+    const sid = night?.session?.id;
+    nightPending.current = false;
+    setNight(null);
+    setSheet(null);
+    if (sid) api(`/api/books/${id}/sleep`, { method: "POST", body: JSON.stringify({ action: "done", sid }) }).catch(() => {});
+  }
+  function resumeFromNight(section: number, where: { ratio?: number; offset?: number }) {
+    recapToken.current++;
+    resolveNight();
+    playFrom(section, where);
+  }
 
   // ---- פעולות ----
   async function togglePlay() {
     const a = audioRef.current;
     if (!a) return;
+    if (loading.startsWith("מכין סיכום")) {
+      // לחיצה נוספת בזמן שהסיכום נטען — מוותרים עליו וממשיכים בספר
+      skipInterlude();
+      return;
+    }
+    // שעון השינה עצר ועכשיו מסתכלים על המסך — קודם "איפה נרדמת?"
+    if (nightPending.current && document.visibilityState === "visible" && (!a.src || a.paused)) {
+      nightPending.current = false;
+      if (await loadNight()) return;
+    }
     if (!a.src) {
-      if (loading.startsWith("מכין תזכורת")) {
-        // לחיצה נוספת בזמן שהתזכורת נטענת — מוותרים עליה ומתחילים את הספר
-        skipInterlude();
-        return;
-      }
-      if (pendingRecap.current) {
-        pendingRecap.current = false;
-        await playRecap(); // אחרי התזכורת מתחיל הזרם מהמקום שנעצר
-        return;
-      }
       await playFrom(curRef.current, { offset: progRef.current?.offset || 0 });
       return;
     }
@@ -913,7 +1063,7 @@ export default function Player({ id }: { id: string }) {
         {interlude && (
           <div className="interlude">
             <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-              <div className="pill">{interlude === "recap" ? "תזכורת: מה שמעת עד עכשיו" : "שאלה לסיום הפרק — רגע לחשוב, ואז ממשיכים"}</div>
+              <div className="pill">{interlude === "recap" ? interludeTitle || "סיכום" : "שאלה לסיום הפרק — רגע לחשוב, ואז ממשיכים"}</div>
               <button className="ghost sm" onClick={skipInterlude}>דלג ⏭</button>
             </div>
             <div>{interludeText}</div>
@@ -996,6 +1146,9 @@ export default function Player({ id }: { id: string }) {
           <button className="chip" onClick={() => setSheet("notes")}>
             📝 פתקים{notes.length ? ` (${notes.length})` : ""}
           </button>
+          <button className={"chip" + (sleep ? " on" : "")} onClick={() => setSheet("sleep")} aria-label="שעון שינה">
+            😴{sleep ? " " + (sleep.mode === "chapter" ? "סוף פרק" : fmt((sleep.endAt - nowTick) / 1000)) : ""}
+          </button>
           <button className="chip" onClick={() => setSheet("more")}>
             ⋯
           </button>
@@ -1062,7 +1215,7 @@ export default function Player({ id }: { id: string }) {
           <div className="card row">
             <div className="grow">
               <div>מצב לימוד שקט</div>
-              <div className="muted small">תזכורת קצרה כשחוזרים אחרי הפסקה, ושאלה אחת בסוף כל פרק</div>
+              <div className="muted small">שאלה אחת בסוף כל פרק (בהאזנה בעברית)</div>
             </div>
             <button className={prog.study ? "on" : "ghost"} onClick={() => setStudy(!prog.study)}>
               {prog.study ? "פועל" : "כבוי"}
@@ -1070,10 +1223,17 @@ export default function Player({ id }: { id: string }) {
           </div>
           <div className="card row">
             <div className="grow">
-              <div>שעון שינה</div>
-              <div className="muted small">{sleepAt === "chapter" ? "עד סוף הפרק" : typeof sleepAt === "number" ? `עוד ${fmt((sleepAt - Date.now()) / 1000)}` : "כבוי"}</div>
+              <div>מה פספסתי?</div>
+              <div className="muted small">סיכום קצר בעברית — של מה שהתנגן בזמן שנרדמת, או של מה ששמעת לאחרונה</div>
             </div>
-            <button className="ghost" onClick={() => setSheet("sleep")}>בחר</button>
+            <button className="ghost" onClick={() => { setSheet(null); playMissed(); }}>השמע</button>
+          </div>
+          <div className="card row">
+            <div className="grow">
+              <div>שעון שינה</div>
+              <div className="muted small">{sleep?.mode === "chapter" ? "עד סוף הפרק" : sleep ? `עוד ${fmt((sleep.endAt - nowTick) / 1000)}` : "כבוי"}</div>
+            </div>
+            <button className="ghost" onClick={() => setSheet("sleep")}>פתח</button>
           </div>
         </div>
       )}
@@ -1103,13 +1263,65 @@ export default function Player({ id }: { id: string }) {
       {sheet === "sleep" && (
         <div className="sheet">
           <div className="sheetTitle">שעון שינה</div>
-          <div className="row wrap">
-            {[15, 30, 45, 60].map((m) => (
-              <button key={m} className="ghost" onClick={() => { setSleepAt(Date.now() + m * 60000); setSheet(null); }}>{m} דק׳</button>
-            ))}
-            <button className="ghost" onClick={() => { setSleepAt("chapter"); setSheet(null); }}>סוף הפרק</button>
-            <button className="ghost" onClick={() => { setSleepAt(null); setSheet(null); }}>כבוי</button>
+          <SleepDial
+            running={sleep?.mode === "min"}
+            remaining={sleep?.mode === "min" ? Math.max(0, (sleep.endAt - nowTick) / 60_000) : undefined}
+            initial={(() => {
+              try {
+                return Number(localStorage.getItem("sleepMinutes")) || 15;
+              } catch {
+                return 15;
+              }
+            })()}
+            onCommit={(m) => (sleep?.mode === "min" ? adjustSleep(m) : m >= 1 ? startSleep(m) : undefined)}
+          />
+          <div className="row" style={{ gap: 8 }}>
+            <button className={"grow " + (sleep?.mode === "chapter" ? "on" : "ghost")} onClick={() => startSleep(null)}>
+              עד סוף הפרק
+            </button>
+            {sleep && (
+              <button className="grow ghost" onClick={cancelSleep}>
+                כבה
+              </button>
+            )}
           </div>
+          <p className="muted small" style={{ marginTop: 10 }}>
+            בדקה האחרונה הקול נחלש לאט. כשתחזור לספר, תוכל לבחור את הדבר האחרון שאתה זוכר — ולשמוע סיכום של מה שפספסת.
+          </p>
+        </div>
+      )}
+      {sheet === "night" && night && (
+        <div className="sheet">
+          <div className="sheetTitle">איפה נרדמת?</div>
+          <p className="muted small">
+            הפעלת שעון שינה ב-{hhmm(night.session?.startedAt)}
+            {night.endedAt ? `, וההשמעה נעצרה ב-${hhmm(night.endedAt)}` : ""}. לחץ על הדבר האחרון שאתה זוכר — נמשיך משם.
+          </p>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="grow primary" onClick={() => playMissed(night.end)}>
+              🌙 מה פספסתי?
+            </button>
+            <button
+              className="grow ghost"
+              onClick={() => night.session && resumeFromNight(night.session.section, { offset: night.session.offset })}
+            >
+              מתחילת הלילה
+            </button>
+          </div>
+          {missedText && <div className="missedBox">{missedText}</div>}
+          <div className="nightList">
+            {night.paragraphs.map((p) => (
+              <button key={`${p.section}-${p.para}`} className="nightItem" onClick={() => resumeFromNight(p.section, { ratio: p.ratio })}>
+                <span className="when">{hhmm(p.clock)}</span>
+                <span className="what" dir="auto">
+                  {p.text}
+                </span>
+              </button>
+            ))}
+          </div>
+          <button className="ghost" style={{ width: "100%", marginTop: 12 }} onClick={resolveNight}>
+            המשך מאיפה שנעצר
+          </button>
         </div>
       )}
 
