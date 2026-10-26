@@ -71,3 +71,15 @@ if (mp.chapters.length !== 2 || mp.chapters[0].title !== "Chapter One") throw ne
   if (runningHeaders([{ text: "Chapter 1\n\nOnce." }, { text: "Chapter 2\n\nTwice." }]).size !== 0) throw new Error("unique headings are not running headers");
   console.log("running headers ok");
 }
+
+// מספרי עמודים שנדבקו לפני מעבר עמוד — נמחקים (רק בספר שיש בו רצף כזה); מספר אמיתי בטקסט נשאר
+{
+  const { hasPageNumbers, stripPageNumbers, cleanSectionText } = await import("../src/lib/text");
+  const pages = Array.from({ length: 12 }, (_, k) => ({ text: `Some words here and then a broken ${2 * k + 1}\n\nline continues. He was 16 years old.\n\nAll done. ${2 * k + 2}\n\nThe end came.` }));
+  if (!hasPageNumbers(pages)) throw new Error("should detect page numbers");
+  if (hasPageNumbers([{ text: "I was born in 1950\n\nand then.\n\nHe had 3\n\nbrothers." }])) throw new Error("few numbers are not page numbers");
+  const c = cleanSectionText({ id: "pages-test", sections: pages }, 0);
+  if (c !== "Some words here and then a broken line continues. He was 16 years old.\n\nAll done.\n\nThe end came.") throw new Error("pages: " + JSON.stringify(c));
+  if (stripPageNumbers("It ended. 63") !== "It ended.") throw new Error("number at section end");
+  console.log("page numbers ok");
+}

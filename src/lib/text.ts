@@ -45,20 +45,44 @@ export function stripHeaders(text: string, headers: Set<string>): string {
     .join("\n\n");
 }
 
-const headerCache = new Map<string, { n: number; set: Set<string> }>();
-/** הכותרות הרצות של ספר (נשמר בזיכרון לכל ספר, עד שמספר הקטעים משתנה). */
-export function bookHeaders(book: { id: string; sections: { text: string }[] }): Set<string> {
-  const c = headerCache.get(book.id);
-  if (c && c.n === book.sections.length) return c.set;
-  const set = runningHeaders(book.sections);
-  headerCache.set(book.id, { n: book.sections.length, set });
-  return set;
+/** מספרי עמודים שנדבקו לסוף השורה שלפני מעבר עמוד ("and scrawny 1\n\nand faggy"): בספר כזה המספרים האלה
+ *  עולים ברצף לאורך הספר. בודקים שיש לפחות 10 כאלה ושרובם עולים ב-1 עד 3. */
+export function hasPageNumbers(sections: { text: string }[]): boolean {
+  const nums: number[] = [];
+  for (const s of sections) for (const m of s.text.matchAll(/\s(\d{1,4})[ \t]*(?:\n[ \t]*\n|$)/g)) nums.push(Number(m[1]));
+  if (nums.length < 10) return false;
+  let inc = 0;
+  for (let k = 1; k < nums.length; k++) if (nums[k] > nums[k - 1] && nums[k] - nums[k - 1] <= 3) inc++;
+  return inc >= (nums.length - 1) * 0.5;
 }
 
-/** הטקסט של קטע כפי שצריך להקריא ולתרגם אותו: בלי כותרות רצות, בלי שבירת פסקה באמצע משפט, בלי רווחים כפולים. */
+/** מוחק מספר עמוד בסוף פסקה: אחרי סוף משפט, או כשהמשפט ממשיך בפסקה הבאה (אות קטנה), או בסוף הקטע. */
+export function stripPageNumbers(t: string): string {
+  return t
+    .replace(/([.!?”"’)])[ \t]+\d{1,4}[ \t]*(?=\n[ \t]*\n|$)/g, "$1")
+    .replace(/[ \t]+\d{1,4}[ \t]*(\n[ \t]*\n\s*)(?=[a-z])/g, "$1")
+    .replace(/[ \t]+\d{1,4}[ \t]*$/, "");
+}
+
+const cleanCache = new Map<string, { n: number; headers: Set<string>; pages: boolean }>();
+function bookClean(book: { id: string; sections: { text: string }[] }) {
+  const c = cleanCache.get(book.id);
+  if (c && c.n === book.sections.length) return c;
+  const v = { n: book.sections.length, headers: runningHeaders(book.sections), pages: hasPageNumbers(book.sections) };
+  cleanCache.set(book.id, v);
+  return v;
+}
+/** הכותרות הרצות של ספר (נשמר בזיכרון לכל ספר, עד שמספר הקטעים משתנה). */
+export function bookHeaders(book: { id: string; sections: { text: string }[] }): Set<string> {
+  return bookClean(book).headers;
+}
+
+/** הטקסט של קטע כפי שצריך להקריא ולתרגם אותו: בלי כותרות רצות, בלי מספרי עמודים, בלי שבירת פסקה באמצע משפט, בלי רווחים כפולים. */
 export function cleanSectionText(book: { id: string; sections: { text: string }[] }, i: number): string {
-  const t = book.sections[i]?.text ?? "";
-  return joinBrokenParagraphs(stripHeaders(t, bookHeaders(book))).replace(/[ \t]{2,}/g, " ");
+  const c = bookClean(book);
+  let t = stripHeaders(book.sections[i]?.text ?? "", c.headers);
+  if (c.pages) t = stripPageNumbers(t);
+  return joinBrokenParagraphs(t).replace(/[ \t]{2,}/g, " ");
 }
 
 /** מסיר שורות מידע של בן־יהודה ("מעודכן לתאריך", כתובת) וכתובות אינטרנט בודדות מתחילת קובץ טקסט. */

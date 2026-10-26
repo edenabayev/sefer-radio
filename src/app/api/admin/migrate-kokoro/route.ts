@@ -1,4 +1,4 @@
-// מעבר kk2 → kk3 (26.10): הקלטות אנגלית שהטקסט המוקרא שלהן לא השתנה מועתקות כמו שהן; קטעים שהייתה בהם
+// מעבר kk2 → kk4 (26.10): הקלטות אנגלית שהטקסט המוקרא שלהן לא השתנה מועתקות כמו שהן; קטעים שהייתה בהם
 // כותרת רצה ("The Catcher in the Rye" באמצע הסיפור) או פסקה שנשברה באמצע משפט — לא, וההכנה ברקע יוצרת אותם מחדש.
 import { list, copy } from "@vercel/blob";
 import { ok, fail, authorized } from "@/lib/api";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const FROM = "kk2";
-const TO = "kk3";
+const TO = "kk4";
 const norm = (x: string) => x.replace(/\s*\n\s*\n\s*/g, "\n\n").replace(/[ \t]+/g, " ").trim();
 
 export async function POST(req: Request) {
