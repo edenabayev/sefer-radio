@@ -275,12 +275,14 @@ function mockCard(book: Book, names: { name: string; count: number }[]): CardJso
 
 const clean = (s: unknown, max = 4000) => (typeof s === "string" ? s.replace(/\u0000/g, "").trim().slice(0, max) : "");
 
-/** "לפי התרגום של…" רק כשהצורה העברית באמת מופיעה בדוח המחקר; אחרת זו הצעה שלנו (כדי שהכרטיס לא ייחס למתרגם מה שלא נמצא). */
+/** "לפי התרגום של…" רק כשגם הצורה במקור וגם הצורה העברית באמת מופיעות בדוח המחקר;
+ *  אחרת זו הצעה שלנו (כדי שהכרטיס לא ייחס למתרגם מה שלא נמצא). */
 export function verifyNotes(glossary: GlossaryEntry[], report: string): GlossaryEntry[] {
   const words = (t: string) => t.replace(/[^\u0590-\u05FFa-zA-Z'׳״"\s-]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
+  const low = report.toLowerCase().replace(/[’]/g, "'");
   return glossary.map((g) => {
     if (!g.note || !/לפי/.test(g.note)) return g;
-    const ok = words(g.he).every((w) => report.includes(w));
+    const ok = low.includes(g.en.toLowerCase().replace(/[’]/g, "'")) && words(g.he).every((w) => report.includes(w));
     return ok ? g : { ...g, note: "הצעה ברוח התרגום" };
   });
 }

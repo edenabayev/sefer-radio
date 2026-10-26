@@ -122,10 +122,11 @@ const vn = verifyNotes(
     { en: "phony", he: "מזויף", note: "לפי התרגום של X" },
     { en: "for God's sake", he: "בחייאת", note: "לפי התרגום של X" },
     { en: "Holden", he: "הולדן", note: "הצעה" },
+    { en: "goddam", he: "דפוק", note: "לפי התרגום של X" },
   ],
-  "בתרגום של X, phony תורגם כ'מזויף'.",
+  "בתרגום של X, phony תורגם כ'מזויף'. היא משתמשת גם במילה 'דפוק'.",
 );
-assert.deepEqual(vn.map((g) => g.note), ["לפי התרגום של X", "הצעה ברוח התרגום", "הצעה"]);
+assert.deepEqual(vn.map((g) => g.note), ["לפי התרגום של X", "הצעה ברוח התרגום", "הצעה", "הצעה ברוח התרגום"], "צריך גם את הצורה במקור בדוח");
 
 // ---------- נתיבים ודורות ----------
 assert.equal(heDir(book), "books/test-tcard/he/");
