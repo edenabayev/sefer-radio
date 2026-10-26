@@ -6,6 +6,7 @@
 import * as store from "./storage";
 import type { Book } from "./books";
 import { researchWithSearch, genJson, usageCostUsd, MOCK, type Usage } from "./gemini";
+import { joinBrokenParagraphs } from "./text";
 
 export interface Translation {
   translator: string;
@@ -139,33 +140,40 @@ export function candidateNames(texts: string[], max = 50): { name: string; count
     for (const m of t.matchAll(/\b((?:[A-Z]\.){2,})/g)) inc(multi, m[1]);
   }
   const out: { name: string; count: number }[] = [];
-  for (const [w, n] of cap) {
-    if (n < 3 || STOP.has(w)) continue;
-    const lo = lower.get(w.toLowerCase()) ?? 0;
-    if (lo > n * 0.25) continue; // מילה רגילה שבמקרה באה באות גדולה
-    out.push({ name: w, count: n });
-  }
+  const multiNames: [string, number][] = [];
   for (const [w, n] of multi) {
     if (n < 2) continue;
     // צירוף שכל המילים שלו רגילות ("The End") — לא שם
     const parts = w.split(" ").filter((p) => !/^(Mr|Mrs|Ms|Dr)\.?$/.test(p));
     if (parts.every((p) => (lower.get(p.toLowerCase()) ?? 0) > (cap.get(p) ?? 0))) continue;
+    multiNames.push([w, n]);
+    out.push({ name: w, count: n });
+  }
+  for (const [w, n] of cap) {
+    if (n < 3 || STOP.has(w)) continue;
+    const lo = lower.get(w.toLowerCase()) ?? 0;
+    if (lo > n * 0.25) continue; // מילה רגילה שבמקרה באה באות גדולה
+    // חלק משם מורכב ("York" מתוך "New York", "Avenue" מתוך "Fifth Avenue") — השם המלא כבר ברשימה
+    const inMulti = multiNames.reduce((sum, [m, c]) => sum + (m.split(" ").includes(w) ? c : 0), 0);
+    if (inMulti >= n * 0.6) continue;
     out.push({ name: w, count: n });
   }
   return out.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, max);
 }
 
-/** תחילת הספר עצמו (בלי עמודי שער קצרים) — לזיהוי הקול והסגנון. */
-export function styleSample(book: Book, chars = 3500): string {
-  const parts: string[] = [];
-  let n = 0;
-  for (const s of book.sections) {
-    if (s.text.length < 200 && parts.length === 0) continue; // עמוד שער, "פרק 1"
-    parts.push(s.text);
-    n += s.text.length;
-    if (n >= chars) break;
-  }
-  return parts.join("\n\n").slice(0, chars);
+/** קטעים מכמה מקומות בספר (התחלה, אמצע, שלושה רבעים) — לזיהוי הקול, הסגנון והביטויים החוזרים של המספר. */
+export function styleSample(book: Book, chars = 4800): string {
+  const secs = book.sections.filter((s) => s.text.length >= 200); // בלי עמודי שער ו"פרק 1"
+  if (!secs.length) return book.sections.map((s) => s.text).join("\n\n").slice(0, chars);
+  const at = [0, Math.floor(secs.length / 2), Math.floor((secs.length * 3) / 4)].filter((v, k, a) => a.indexOf(v) === k);
+  const per = Math.floor(chars / at.length);
+  return at
+    .map((k) => {
+      let t = "";
+      for (let j = k; j < secs.length && t.length < per; j++) t += (t ? "\n\n" : "") + secs[j].text;
+      return t.slice(0, per);
+    })
+    .join("\n\n[…]\n\n");
 }
 
 // ---------- המחקר ----------
@@ -194,24 +202,27 @@ export function researchPrompt(book: Book): string {
 }
 
 const STRUCTURE_SYSTEM =
-  "אתה עורך תרגום ספרותי. מתוך דוח מחקר וקטע מהספר, הכן 'כרטיס תרגום' שמתרגם בינה מלאכותית יעבוד לפיו בכל קטע מהספר. " +
-  "כתוב בעברית (מלבד הצורות במקור שבמילון). אל תמציא עובדות שאינן בדוח: כשאין מקור לבחירה של מתרגם — הצע בחירה משלך וסמן אותה כהצעה.";
+  "אתה עורך תרגום ספרותי. מתוך דוח מחקר וקטעים מהספר, הכן 'כרטיס תרגום' שמתרגם בינה מלאכותית יעבוד לפיו בכל קטע מהספר. " +
+  "המאזין ביקש במפורש שהתרגום יהיה כמה שיותר דומה לתרגום העברי הנבחר — לכן ההנחיות מתארות את השיטה של המתרגם הזה כפי שהיא, " +
+  "כולל בחירות שנויות במחלוקת. ביקורת מציינים, אבל לא 'מתקנים' בגללה את השיטה. " +
+  "כתוב בעברית (מלבד הצורות במקור שבמילון). אל תמציא עובדות שאינן בדוח: כשאין מקור לבחירה של המתרגם — הצע בחירה ברוח השיטה שלו וסמן אותה כהצעה.";
 
 export function structurePrompt(book: Book, report: string, names: { name: string; count: number }[], sample: string): string {
   return (
     `הספר: ${bookLabel(book)}.\n\n` +
     `דוח המחקר:\n${report.slice(0, 20000)}\n\n` +
-    `תחילת הספר במקור (לזיהוי הקול והסגנון):\n${sample}\n\n` +
+    `קטעים מהספר במקור, מכמה מקומות (לזיהוי הקול, הסגנון והביטויים החוזרים):\n${sample}\n\n` +
     `שמות ומונחים שחוזרים בספר (מספר הופעות):\n${names.map((n) => `${n.name} (${n.count})`).join(", ") || "—"}\n\n` +
     "הכן את הכרטיס:\n" +
     "- hebrewTitle: שם הספר בעברית, כפי שתורגם (אם יש).\n" +
     "- translations: התרגומים לעברית שנמצאו בדוח (מתרגם, שנה, הוצאה, הערה קצרה).\n" +
-    "- model: איזה תרגום אנחנו מחקים ולמה — משפט אחד. אם אין תרגום: 'אין תרגום עברי; הגישה מבוססת על…'.\n" +
-    "- approach: 3 עד 5 משפטים פשוטים, למאזין, שמסבירים את שיטת התרגום שנבחרה.\n" +
-    "- instructions: 8 עד 15 הנחיות קונקרטיות למתרגם שלנו — משלב, הקול של המספר, קללות, ביטויים חוזרים ואיך לתרגם אותם בעקביות, שמות, ניבים, קצב המשפטים, ממה להימנע. כל הנחיה במשפט או שניים.\n" +
-    "- glossary: מילון קבוע. (א) השמות והמקומות החוזרים מהרשימה, בכתיב עברי עקבי — כפי שבתרגום המוערך אם ידוע; " +
-    "(ב) ביטויים וכינויים חוזרים של המספר ומילים טעונות, עם תרגום עקבי. השדה en — בדיוק כפי שהצורה מופיעה בטקסט המקור. " +
-    "note — 'לפי התרגום של …' רק אם הדוח מבסס זאת, אחרת 'הצעה'. עד 60 ערכים.\n" +
+    "- model: איזה תרגום אנחנו מחקים — בדרך כלל העדכני או המוערך ביותר — ולמה, במשפט אחד. אם אין תרגום: 'אין תרגום עברי; הגישה מבוססת על…'.\n" +
+    "- approach: 3 עד 5 משפטים פשוטים, למאזין, שמסבירים איך המתרגם הזה עובד. אם יש ביקורת מרכזית על התרגום — משפט אחד שמתאר אותה (בלי לשנות בגללה את ההנחיות).\n" +
+    "- instructions: 8 עד 15 הנחיות קונקרטיות שמתארות את השיטה של המתרגם הנבחר כפי שהיא: המשלב, בחירות המילים הידועות שלו (כולל מילות סלנג שהוא משתמש בהן), " +
+    "הקול של המספר, קללות, ביטויים חוזרים ואיך לתרגם אותם בעקביות, שמות, ניבים, קצב המשפטים. כל הנחיה במשפט או שניים.\n" +
+    "- glossary: מילון קבוע. (א) השמות והמקומות החוזרים מהרשימה, בכתיב עברי עקבי — כפי שבתרגום הנבחר אם ידוע; " +
+    "(ב) לפחות 10 ביטויים, מילים טעונות וקללות שחוזרים אצל המספר (חפש אותם בקטעים מהספר), עם תרגום עקבי ברוח המתרגם. " +
+    "השדה en — בדיוק כפי שהצורה מופיעה בטקסט המקור. note — 'לפי התרגום של …' רק אם הדוח מבסס זאת, אחרת 'הצעה'. עד 70 ערכים.\n" +
     "- confidence: high אם נמצא תרגום ומקורות טובים על השיטה שלו; medium אם יש תרגום אבל מעט מידע על השיטה; low אם אין תרגום."
   );
 }
@@ -305,14 +316,18 @@ export async function beginResearch(bookId: string, now = Date.now()): Promise<s
 }
 
 /** מחקר מלא (שתי קריאות למודל הגדול) ושמירת כרטיס חדש. מסמן סוף/כישלון בקבצים נפרדים. */
-export async function researchCard(book: Book, registeredRun?: string): Promise<TranslationCard> {
+export async function researchCard(book: Book, registeredRun?: string, opts: { reuse?: TranslationCard | null } = {}): Promise<TranslationCard> {
   const runId = registeredRun ?? (await beginResearch(book.id));
   const dir = D.runs(book.id);
   try {
     const texts = book.sections.map((s) => s.text);
     const names = candidateNames(texts.join("\n\n").length > 600_000 ? texts.slice(0, Math.ceil(texts.length / 2)) : texts);
     const sample = styleSample(book);
-    const r = await researchWithSearch(researchPrompt(book), RESEARCH_SYSTEM);
+    // "סדר מחדש": משתמשים בדוח המחקר הקיים (בלי חיפוש חדש) — רק בונים את הכרטיס מחדש
+    const r =
+      opts.reuse?.report
+        ? { text: opts.reuse.report, sources: opts.reuse.sources, usage: { model: "reuse", input: 0, output: 0, searches: 0 } as Usage }
+        : await researchWithSearch(researchPrompt(book), RESEARCH_SYSTEM);
     const usage: Usage[] = [r.usage];
     const j = await genJson<CardJson>(structurePrompt(book, r.text, names, sample), STRUCTURE_SYSTEM, CARD_SCHEMA, mockCard(book, names), undefined, (u) => usage.push(u));
     const cost = { usd: Math.round(usageCostUsd(usage) * 10000) / 10000, searches: usage.reduce((n, u) => n + u.searches, 0) };
@@ -428,9 +443,10 @@ const BASE_SYSTEM =
 
 export function translationPrompt(book: Book, i: number, card: TranslationCard | null, prevHebrew?: string | null): { system: string; prompt: string } {
   const sec = book.sections[i];
+  const source = joinBrokenParagraphs(sec.text).replace(/[ \t]{2,}/g, " "); // בלי שבירת פסקה באמצע משפט ורווחים כפולים מה-PDF
   let system = BASE_SYSTEM;
   if (card) {
-    const g = relevantGlossary(card.glossary, sec.text);
+    const g = relevantGlossary(card.glossary, source);
     system +=
       `\n\nכרטיס התרגום של הספר ${bookLabel(book)}` +
       (card.model ? ` — אנחנו כותבים ברוח ${card.model}` : "") +
@@ -448,6 +464,6 @@ export function translationPrompt(book: Book, i: number, card: TranslationCard |
   const prompt =
     (prevSrc ? `(הקשר — סוף הקטע הקודם במקור, לא לתרגם:)\n${prevSrc}\n\n` : "") +
     (prevHebrew ? `(הקשר — סוף התרגום שלנו לקטע הקודם, כדי להמשיך באותו קול ובאותם מונחים; לא לחזור עליו:)\n${prevHebrew.slice(-700)}\n\n` : "") +
-    `(הקטע לתרגום:)\n${sec.text}`;
+    `(הקטע לתרגום:)\n${source}`;
   return { system, prompt };
 }

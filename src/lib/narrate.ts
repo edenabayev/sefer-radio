@@ -1,6 +1,7 @@
 // צינור ההקראה — מה שהגדולים עושים לפני ואחרי מנוע הקול:
 // 1. ניקוי: קיצורים, מספרים, שורות שבורות, מרכאות.   2. חיתוך למשפטים אמיתיים וקיבוץ לחתיכות בגודל נוח.
 // 3. קיצוץ שקט בקצוות של כל חתיכה.   4. הפסקות לפי סוג הגבול (משפט / פסקה / כותרת / חיתוך כפוי).
+import { joinBrokenParagraphs } from "./text";
 import { SAMPLE_RATE } from "./gemini";
 
 export type Boundary = "sentence" | "paragraph" | "heading" | "forced" | "end";
@@ -117,6 +118,8 @@ export function normalizeForSpeech(text: string, lang: "he" | "en"): string {
     .replace(/[*_#>`]+/g, "")
     .replace(/ /g, " ")
     .replace(/https?:\/\/\S+/g, "");
+  // פסקה שנשברה באמצע משפט (מעבר עמוד ב-PDF) — מחוברת בחזרה, כדי שלא תהיה "נשימה" באמצע משפט
+  if (lang === "en") t = joinBrokenParagraphs(t);
   // שורות בודדות בתוך פסקה → רווח (פסקאות נשארות)
   t = t
     .split(/\n\s*\n+/)

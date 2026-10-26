@@ -12,6 +12,12 @@ export function detectLang(sample: string): Lang {
   return heb > 0 ? "he" : "other";
 }
 
+/** PDF/EPUB שוברים לפעמים פסקה באמצע משפט (מעבר עמוד): "…But it was a\n\nfunny thing." — מחברים בחזרה.
+ *  רק כשהפסקה הקודמת לא נגמרת בסימן סוף והבאה מתחילה באות קטנה (באנגלית זה סימן אמין; בעברית אין אותיות קטנות). */
+export function joinBrokenParagraphs(t: string): string {
+  return t.replace(/([^\s.!?:;"”’'\)\]…])[ \t]*\n[ \t]*\n\s*(?=[a-z])/g, "$1 ");
+}
+
 /** מסיר שורות מידע של בן־יהודה ("מעודכן לתאריך", כתובת) וכתובות אינטרנט בודדות מתחילת קובץ טקסט. */
 export function cleanSourceText(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");

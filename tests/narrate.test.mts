@@ -63,3 +63,13 @@ const out = await narrate("Hello there. Bye.\n\nNext.", "en", { targetChars: 8, 
 const expectedMin = 3 * tone.length + (0.25 + 0.7 + 0.35) * rate * 2 - 10;
 assert.ok(out.length >= expectedMin, `${out.length} >= ${expectedMin}`);
 console.log("narrate ok");
+
+// פסקה שנשברה באמצע משפט (מעבר עמוד ב-PDF) — מחוברת בהקראה באנגלית; פסקה אמיתית נשארת
+{
+  const { normalizeForSpeech: nfs } = await import("../src/lib/narrate");
+  const { joinBrokenParagraphs } = await import("../src/lib/text");
+  const out = nfs("But it was a\n\nfunny thing. He left.\n\nthe end came later, he said,\n\nand then\n\nNothing.", "en");
+  if (out !== "But it was a funny thing. He left.\n\nthe end came later, he said, and then\n\nNothing.") throw new Error("broken paragraphs: " + JSON.stringify(out));
+  if (joinBrokenParagraphs("שלום\n\nעולם") !== "שלום\n\nעולם") throw new Error("Hebrew must not be joined");
+  console.log("broken paragraphs ok");
+}

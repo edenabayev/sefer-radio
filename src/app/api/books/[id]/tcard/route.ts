@@ -48,6 +48,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       model?: string;
       section?: number;
       retranslate?: boolean;
+      reuseReport?: boolean; // לבנות את הכרטיס מחדש מדוח המחקר הקיים, בלי חיפוש חדש
     };
 
     if (body.action === "research") {
@@ -59,9 +60,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         if (e instanceof AlreadyResearching) return ok(await state(id));
         throw e;
       }
+      const reuse = body.reuseReport ? (await cardStatus(id)).card : null;
       after(async () => {
         try {
-          await researchCard(book, runId);
+          await researchCard(book, runId, { reuse });
         } catch (e) {
           console.warn("tcard research", id, (e as Error).message);
         }

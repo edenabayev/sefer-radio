@@ -1509,7 +1509,7 @@ export default function Player({ id }: { id: string }) {
           )}
           {tcard?.state === "none" && (
             <div className="card">
-              <p className="small">עוד אין כרטיס. המחקר בודק מי תרגם את הספר לעברית ואיך, ובונה הנחיות ומילון שמות קבוע. עולה בערך חצי שקל, פעם אחת לספר.</p>
+              <p className="small">עוד אין כרטיס. המחקר בודק מי תרגם את הספר לעברית ואיך, ובונה הנחיות ומילון שמות קבוע. עולה פחות משקל, פעם אחת לספר.</p>
               <button className="primary" onClick={researchAgain} disabled={!!tcardBusy}>
                 🔎 חקור עכשיו
               </button>

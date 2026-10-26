@@ -35,6 +35,9 @@ const got = names.map((n) => n.name);
 for (const want of ["Benny", "Marcus", "Chicago", "Marcus Lane", "Pemberton Academy", "Mr. Hollis", "D.J."]) assert.ok(got.includes(want), `צריך למצוא ${want}: ${got.join(", ")}`);
 for (const no of ["Anyway", "The", "Then", "I", "Sunday", "It", "OK"]) assert.ok(!got.includes(no), `${no} הוא לא שם: ${got.join(", ")}`);
 assert.ok(names[0].count >= names[names.length - 1].count, "ממוין לפי שכיחות");
+// חלק משם מורכב לא נכנס לבד: "York" מתוך "New York"
+const ny = candidateNames(["We drove to New York and then New York again. I hate New York, and New York hates me. Phil lived in New York."]).map((n) => n.name);
+assert.ok(ny.includes("New York") && !ny.includes("York"), ny.join(", "));
 
 // ---------- מילון: טקסט ↔ רשומות ----------
 const gl = parseGlossary("Holden Caulfield = הולדן קולפילד // לפי התרגום\nphony → מזויף\n  Pencey -> פנסי  \nשורה בלי סימן\nphony = כפול\n\nD.B. — די.בי.");
@@ -85,6 +88,11 @@ assert.ok(tp.system.includes("Marcus Lane = מרקוס ליין") && tp.system.i
 assert.ok(!tp.system.includes("phony = מזויף"), "ערך שלא מופיע בקטע הזה לא נשלח");
 assert.ok(tp.system.includes("אל תשחזר"), "חיקוי סגנון, לא העתקה");
 assert.ok(tp.prompt.includes("סוף התרגום הקודם.") && tp.prompt.includes("(הקטע לתרגום:)\n" + story[1]));
+// פסקה שנשברה באמצע משפט (מעבר עמוד ב-PDF) מגיעה למתרגם מחוברת, בלי רווחים כפולים
+const broken: Book = { ...book, sections: [{ i: 0, chapter: 0, text: "It cost  quite a penny. But it was a\n\nfunny thing. Here is what happened.\n\nThe next day he left." }] };
+const bp = translationPrompt(broken, 0, null, null).prompt;
+assert.ok(bp.includes("But it was a funny thing. Here is what happened.\n\nThe next day he left."), bp);
+assert.ok(bp.includes("cost quite a penny"), "רווח כפול מה-PDF");
 const noCard = translationPrompt(book, 0, null, null);
 assert.ok(!noCard.system.includes("כרטיס") && !noCard.prompt.includes("הקשר"), "בלי כרטיס ובלי הקשר בקטע הראשון");
 assert.ok(styleSample(book).startsWith("Anyway"), "דוגמת סגנון מתחילת הספר");
