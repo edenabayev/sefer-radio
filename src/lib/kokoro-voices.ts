@@ -1,5 +1,5 @@
 // רשימת הקולות של Kokoro (אנגלית) — מודול קל, בלי טעינת המודל עצמו.
-export const KOKORO_VERSION = "kk1"; // משתנה אם משנים את אופן ההפקה (דיוק, הפסקות)
+export const KOKORO_VERSION = "kk2"; // kk2: מ-26.10 — הקלטות מלפני צינור ההקראה (15.10) נוצרות מחדש; // משתנה אם משנים את אופן ההפקה (דיוק, הפסקות)
 export const KOKORO_VOICES = [
   { id: "am_michael", label: "Michael — אמריקאי, רגוע" },
   { id: "am_fenrir", label: "Fenrir — אמריקאי, עמוק" },
