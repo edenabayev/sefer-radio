@@ -3,7 +3,7 @@
 // נגן קבוע למטה, בחירת קול ומהירות, מצב לימוד שקט (שאלה בסוף פרק), שעון שינה עם "איפה נרדמת?", ושיחה חיה.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { api, type AudioResult, type BookFull, type Manifest, type Note, type Progress, type StreamItem } from "@/lib/client";
+import { api, type AudioResult, type BookFull, type CardState, type Manifest, type Note, type Progress, type StreamItem } from "@/lib/client";
 import { startLive, type LiveHandle, type LiveState } from "@/lib/live";
 import SleepDial from "./SleepDial";
 
@@ -11,7 +11,7 @@ interface Voice {
   id: string;
   label: string;
 }
-type Sheet = null | "chapters" | "voice" | "aa" | "more" | "sleep" | "notes" | "night";
+type Sheet = null | "chapters" | "voice" | "aa" | "more" | "sleep" | "notes" | "night" | "tcard";
 type SleepTimer = { mode: "min"; endAt: number; sid?: string } | { mode: "chapter"; sid?: string };
 interface NightState {
   pending: boolean;
@@ -66,6 +66,12 @@ export default function Player({ id }: { id: string }) {
   const [toast, setToast] = useState("");
   const [prepErr, setPrepErr] = useState(""); // למה ההכנה ברקע נעצרה
   const [previewing, setPreviewing] = useState("");
+  const [tcard, setTcard] = useState<CardState | null>(null); // כרטיס התרגום (ספר שאינו בעברית)
+  const [tcardEdit, setTcardEdit] = useState<{ instructions: string; glossary: string } | null>(null); // עריכה שעוד לא נשמרה
+  const [tcardBusy, setTcardBusy] = useState<"" | "research" | "save" | "sample" | "apply">("");
+  const [tcardSample, setTcardSample] = useState<{ section: number; text: string } | null>(null);
+  const tcardStateRef = useRef<CardState["state"] | null>(null);
+  useEffect(() => void (tcardStateRef.current = tcard?.state ?? null), [tcard]);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const bookRef = useRef<BookFull | null>(null);
@@ -77,6 +83,7 @@ export default function Player({ id }: { id: string }) {
   const audioVoice = () => (langRef.current === "he" ? voiceRef.current : voiceEnRef.current);
   const progRef = useRef<Progress | null>(null);
   const readyRef = useRef<Set<number>>(new Set());
+  const qReadyRef = useRef<Set<number>>(new Set()); // פרקים שהשאלה שלהם כבר מוכנה (בעברית)
   const cache = useRef(new Map<string, Promise<AudioResult>>());
   const manifestRef = useRef<Manifest | null>(null); // הזרם שמתנגן עכשיו: אילו קטעים ואיפה כל אחד מתחיל
   const nextManifestRef = useRef<Manifest | null>(null); // הזרם הבא, מוכן מראש לקראת סוף הנוכחי
@@ -85,6 +92,9 @@ export default function Player({ id }: { id: string }) {
   const segRef = useRef<StreamItem | null>(null); // הפריט (קטע/שאלה) שמתנגן ברגע זה
   const wantNext = useRef<number | null>(null); // קטע שהיה אמור להתחיל ולא התחיל (מסך כבוי) — נשלים כשחוזרים
   const pendingSeek = useRef<number | null>(null);
+  // כל מעבר לזרם חדש מקבל מספר: מעבר חדש מבטל ישן, ובזמן מעבר מתעלמים מאירועי הזרם הישן (שממשיך להתנגן עד ההחלפה)
+  const playToken = useRef(0);
+  const switching = useRef(false);
   const interludeRef = useRef<{ kind: "recap"; resume: { section: number; offset: number } } | { kind: "question"; chapter: number } | null>(null);
   const recapToken = useRef(0); // לביטול סיכום שעוד נטען (לחיצה נוספת על ▶ או "דלג")
   const sleepRef = useRef<SleepTimer | null>(null);
@@ -144,9 +154,10 @@ export default function Player({ id }: { id: string }) {
 
   // ---- הכנה מראש: מבקשים מהשרת להכין קדימה, ומעדכנים מה מוכן ומה תורגם ----
   const refreshText = useCallback(async () => {
-    const t = await api<{ he: Record<number, string>; ready: number[] }>(`/api/books/${id}/text?voice=${encodeURIComponent(audioVoice())}&lang=${langRef.current}`);
+    const t = await api<{ he: Record<number, string>; ready: number[]; questions?: number[] }>(`/api/books/${id}/text?voice=${encodeURIComponent(audioVoice())}&lang=${langRef.current}`);
     setHe(t.he);
     setReady(new Set(t.ready));
+    qReadyRef.current = new Set(t.questions ?? []);
   }, [id]);
 
   const runPrepare = useCallback(async () => {
@@ -193,6 +204,7 @@ export default function Player({ id }: { id: string }) {
         await refreshText();
         runPrepare();
         loadNight(); // האם ההאזנה האחרונה נגמרה בשעון שינה?
+        if (b.lang === "en") loadCard(true); // ספר שאינו בעברית: כרטיס תרגום — ואם עוד אין, המחקר מתחיל עכשיו
       } catch (e) {
         setErr((e as Error).message);
       }
@@ -272,7 +284,7 @@ export default function Player({ id }: { id: string }) {
     a.src = src;
   };
   const streamUrl = useCallback(
-    (m: Manifest) => `/api/books/${id}/stream?from=${m.from}&upto=${m.upto}&qs=${m.qs.join(",")}&lang=${langRef.current}&voice=${encodeURIComponent(m.voice)}`,
+    (m: Manifest) => `/api/books/${id}/stream?from=${m.from}&upto=${m.upto}&qs=${m.qs.join(",")}&lang=${langRef.current}&voice=${encodeURIComponent(m.voice)}&gen=${m.gen ?? ""}`,
     [id],
   );
   const itemAt = (m: Manifest, t: number): StreamItem | null => {
@@ -291,6 +303,8 @@ export default function Player({ id }: { id: string }) {
       const a = audioRef.current;
       const b = bookRef.current;
       if (!a || !b || !b.sections[i]) return;
+      const token = ++playToken.current;
+      switching.current = true;
       setErr("");
       interludeRef.current = null;
       setInterlude(null);
@@ -300,13 +314,21 @@ export default function Player({ id }: { id: string }) {
       const v = audioVoice();
       try {
         let m = await loadManifest(i);
+        if (token !== playToken.current) return;
         if (!m.items.length) {
-          setLoading(l === "he" ? "מכין את הקטע הזה…" : "מכין את הקטע במקור…");
+          setLoading(
+            l !== "he"
+              ? "מכין את הקטע במקור…"
+              : tcardStateRef.current === "researching" && b.lang !== "he"
+                ? "בודק מי תרגם את הספר לעברית ואיך (פעם אחת לספר, דקה-שלוש)… ואז מכין את הקטע"
+                : "מכין את הקטע הזה…",
+          );
           await fetchAudio(i, l, v);
+          if (token !== playToken.current) return;
           m = await loadManifest(i);
           if (!m.items.length) throw new Error("הקטע עדיין לא מוכן");
         }
-        if (curRef.current !== i) return;
+        if (token !== playToken.current) return;
         manifestRef.current = m;
         nextManifestRef.current = null;
         const first = m.items[0];
@@ -318,8 +340,10 @@ export default function Player({ id }: { id: string }) {
         a.playbackRate = rate;
         if (t0 > 0) a.currentTime = t0;
         segRef.current = first;
+        switching.current = false; // מכאן אירועי הנגן שייכים לזרם החדש
         setPos({ t: t0, d: first.seconds });
         if (opts.autoplay !== false) await a.play();
+        if (token !== playToken.current) return;
         setLoading("");
         setProg((p) => (p ? { ...p, section: i } : p));
         const isFirst = opts.autoplay !== false && !progRef.current?.startedAt;
@@ -327,8 +351,11 @@ export default function Player({ id }: { id: string }) {
         saveProgress({ section: i, offset: Math.floor(t0), lang: l, ...(isFirst ? { startedAt: new Date().toISOString() } : {}) });
         if (isFirst) window.setTimeout(runPrepare, 1500); // מרגע ▶ הראשון — ההכנה ברקע מתחילה
       } catch (e) {
+        if (token !== playToken.current) return; // מעבר חדש כבר התחיל — השגיאה של הישן לא רלוונטית
         setLoading("");
         setErr((e as Error).message || "תקלה בהשמעה");
+      } finally {
+        if (token === playToken.current) switching.current = false;
       }
     },
     [fetchAudio, loadManifest, streamUrl, rate, saveProgress, runPrepare],
@@ -340,8 +367,16 @@ export default function Player({ id }: { id: string }) {
       const a = audioRef.current;
       const m = manifestRef.current;
       const it = itemOf(m, i);
-      // הזרם "טרי" אם לא הוכן כלום מעבר לסופו; אחרת בונים זרם חדש (שיכלול גם שאלות סוף פרק שנוצרו בינתיים)
-      const fresh = !!m && !readyRef.current.has(m.upto + 1);
+      // הזרם "טרי" אם לא הוכן כלום מעבר לסופו, ואין בתוכו סוף פרק ששאלתו הוכנה אחרי שנבנה;
+      // אחרת בונים זרם חדש (שיכלול גם את מה שנוצר בינתיים)
+      const b = bookRef.current;
+      const missingQ =
+        !!m && !!b && langRef.current === "he" && progRef.current?.study !== false &&
+        [...qReadyRef.current].some((c) => {
+          const end = b.chapters[c]?.end;
+          return end != null && end >= m.from && end <= m.upto && end + 1 < b.sections.length && !m.qs.includes(c);
+        });
+      const fresh = !!m && !readyRef.current.has(m.upto + 1) && !missingQ;
       if (a && it && a.src && fresh) {
         a.currentTime = it.start + ratio * it.seconds;
         if (a.paused) a.play().catch(() => {});
@@ -368,6 +403,8 @@ export default function Player({ id }: { id: string }) {
       if (!a) return;
       const at = resume ?? currentPos();
       const token = ++recapToken.current;
+      playToken.current++; // מבטל מעבר זרם שעוד בדרך
+      switching.current = false;
       try {
         a.pause();
         setLoading("מכין סיכום… (▶ מדלג)");
@@ -434,7 +471,7 @@ export default function Player({ id }: { id: string }) {
   const onEnded = () => {
     const a = audioRef.current;
     const b = bookRef.current;
-    if (!a || !b) return;
+    if (!a || !b || switching.current) return; // באמצע מעבר לזרם אחר — הסוף של הישן לא משנה
     const il = interludeRef.current;
     if (il?.kind === "recap") {
       interludeRef.current = null;
@@ -485,7 +522,7 @@ export default function Player({ id }: { id: string }) {
   const onTime = () => {
     const a = audioRef.current;
     const b = bookRef.current;
-    if (!a || !b) return;
+    if (!a || !b || switching.current) return; // הזרם הישן עוד מתנגן עד ההחלפה — לא מזיז את המקום
     const m = manifestRef.current;
     if (!m) {
       setPos({ t: a.currentTime, d: isFinite(a.duration) ? a.duration : 0 });
@@ -780,6 +817,104 @@ export default function Player({ id }: { id: string }) {
     playFrom(section, where);
   }
 
+  // ---- כרטיס תרגום: מי תרגם את הספר לעברית ואיך — והמתרגם שלנו עובד לפיו ----
+  async function loadCard(autoResearch = false) {
+    try {
+      let c = await api<CardState>(`/api/books/${id}/tcard`);
+      // ספר חדש באנגלית: המחקר מתחיל לבד, פעם אחת (אחרי כישלון — רק בלחיצה)
+      if (autoResearch && c.state === "none") c = await api<CardState>(`/api/books/${id}/tcard`, { method: "POST", body: JSON.stringify({ action: "research" }) });
+      setTcard(c);
+      return c;
+    } catch {
+      return null;
+    }
+  }
+  // בזמן מחקר — בודקים כל כמה שניות אם הכרטיס מוכן (רק כשהמסך שלו פתוח, או בפעם הראשונה)
+  useEffect(() => {
+    if (tcard?.state !== "researching") return;
+    const t = window.setInterval(() => loadCard(), sheet === "tcard" ? 4000 : 20000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tcard?.state, sheet]);
+  async function researchAgain() {
+    setTcardBusy("research");
+    try {
+      setTcard(await api<CardState>(`/api/books/${id}/tcard`, { method: "POST", body: JSON.stringify({ action: "research" }) }));
+      setTcardEdit(null);
+      setTcardSample(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setTcardBusy("");
+    }
+  }
+  async function saveCardEdit() {
+    if (!tcardEdit) return;
+    setTcardBusy("save");
+    try {
+      setTcard(await api<CardState>(`/api/books/${id}/tcard`, { method: "POST", body: JSON.stringify({ action: "save", instructions: tcardEdit.instructions, glossaryText: tcardEdit.glossary }) }));
+      setTcardEdit(null);
+      setToast("הכרטיס נשמר — התרגומים הבאים יהיו לפיו");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setTcardBusy("");
+    }
+  }
+  async function sampleCard() {
+    setTcardBusy("sample");
+    setTcardSample(null);
+    try {
+      if (tcardEdit) await saveCardEdit();
+      const r = await api<{ section: number; text: string }>(`/api/books/${id}/tcard`, { method: "POST", body: JSON.stringify({ action: "sample", section: curRef.current }) });
+      setTcardSample(r);
+    } catch (e) {
+      setErr("הדוגמה לא הצליחה: " + (e as Error).message);
+    } finally {
+      setTcardBusy("");
+    }
+  }
+  /** איפה אנחנו בתוך הקטע (0..1) — כדי שהחלפת שפה תמשיך מאותה נקודה ולא מתחילת הקטע. */
+  function sectionRatio(): number | undefined {
+    const a = audioRef.current;
+    const seg = segRef.current;
+    if (!a || !manifestRef.current || !seg || seg.kind !== "section" || !seg.seconds) return undefined;
+    return Math.max(0, Math.min(0.98, (a.currentTime - seg.start) / seg.seconds));
+  }
+  /** "תרגם והאזן": עוברים לעברית מהמקום הנוכחי. retranslate — דור חדש: גם מה שכבר תורגם יתורגם מחדש לפי הכרטיס. */
+  async function applyCard(retranslate: boolean) {
+    setTcardBusy("apply");
+    try {
+      if (tcardEdit) await saveCardEdit();
+      const r = await api<CardState>(`/api/books/${id}/tcard`, { method: "POST", body: JSON.stringify({ action: "apply", retranslate }) });
+      setTcard(r);
+      const ratio = sectionRatio();
+      // כל מה שהוכן בעברית לפני כן כבר לא בתוקף
+      cache.current.clear();
+      if (nextBlobRef.current) URL.revokeObjectURL(nextBlobRef.current.url);
+      nextBlobRef.current = null;
+      nextManifestRef.current = null;
+      setSheet(null);
+      setPrepErr("");
+      if (langRef.current !== "he") {
+        setLang("he");
+        langRef.current = "he";
+        saveProgress({ lang: "he" });
+      }
+      setReady(new Set());
+      readyRef.current = new Set();
+      if (retranslate) setHe({});
+      await refreshText().catch(() => {});
+      // קודם הקטע הנוכחי (מחכים לו), ורק אחר כך ההכנה ברקע — כדי לא לייצר אותו פעמיים
+      await playFrom(curRef.current, { ratio, autoplay: true });
+      runPrepare();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setTcardBusy("");
+    }
+  }
+
   // ---- פעולות ----
   async function togglePlay() {
     const a = audioRef.current;
@@ -830,6 +965,7 @@ export default function Player({ id }: { id: string }) {
   }
   function changeLang(l: "he" | "orig") {
     if (l === lang) return;
+    const ratio = sectionRatio(); // ממשיכים מאותה נקודה בקטע, בשפה השנייה
     setLang(l);
     langRef.current = l;
     saveProgress({ lang: l });
@@ -837,9 +973,16 @@ export default function Player({ id }: { id: string }) {
     setReady(new Set());
     readyRef.current = new Set();
     setPrepErr("");
+    if (nextBlobRef.current) URL.revokeObjectURL(nextBlobRef.current.url);
+    nextBlobRef.current = null;
+    nextManifestRef.current = null;
     const was = !audioRef.current?.paused;
-    if (audioRef.current?.src) playFrom(curRef.current, { autoplay: was });
-    refreshText().then(() => runPrepare()).catch(() => {});
+    // קודם הקטע הנוכחי, ורק אחר כך ההכנה ברקע — כדי לא לייצר את אותו קטע פעמיים במקביל
+    const first = audioRef.current?.src ? playFrom(curRef.current, { autoplay: was, ratio }) : Promise.resolve();
+    refreshText()
+      .then(() => first)
+      .then(() => runPrepare())
+      .catch(() => {});
   }
   function changeVoice(v: string) {
     if (lang === "he") {
@@ -1221,6 +1364,23 @@ export default function Player({ id }: { id: string }) {
               {prog.study ? "פועל" : "כבוי"}
             </button>
           </div>
+          {!isHebrewBook && book.lang !== "other" && (
+            <div className="card row">
+              <div className="grow">
+                <div>כרטיס תרגום</div>
+                <div className="muted small">
+                  {tcard?.state === "researching"
+                    ? "חוקר מי תרגם את הספר לעברית ואיך…"
+                    : tcard?.card
+                      ? tcard.card.model || tcard.card.approach.slice(0, 80)
+                      : tcard?.state === "error"
+                        ? "המחקר נכשל — אפשר לנסות שוב"
+                        : "איך מתרגמים את הספר הזה: מי תרגם לעברית, באיזה סגנון, ומילון שמות קבוע"}
+                </div>
+              </div>
+              <button className="ghost" onClick={() => { setSheet("tcard"); loadCard(); }}>פתח</button>
+            </div>
+          )}
           <div className="card row">
             <div className="grow">
               <div>מה פספסתי?</div>
@@ -1322,6 +1482,154 @@ export default function Player({ id }: { id: string }) {
           <button className="ghost" style={{ width: "100%", marginTop: 12 }} onClick={resolveNight}>
             המשך מאיפה שנעצר
           </button>
+        </div>
+      )}
+
+      {sheet === "tcard" && (
+        <div className="sheet tcardSheet">
+          <div className="sheetTitle">כרטיס תרגום</div>
+          {!tcard && (
+            <p className="muted small">
+              <span className="spinner" /> טוען…
+            </p>
+          )}
+          {tcard?.state === "researching" && (
+            <div className="card">
+              <span className="spinner" /> חוקר מי תרגם את הספר לעברית, איזה תרגום נחשב הטוב ומה השיטה של המתרגם… (דקה-שתיים)
+              {tcard.card && <div className="muted small" style={{ marginTop: 6 }}>בינתיים התרגום ממשיך לפי הכרטיס הקודם.</div>}
+            </div>
+          )}
+          {tcard?.state === "error" && (
+            <div className="card">
+              <div className="err small">המחקר נכשל: {tcard.error}</div>
+              <button className="ghost" style={{ marginTop: 8 }} onClick={researchAgain} disabled={!!tcardBusy}>
+                🔎 נסה שוב
+              </button>
+            </div>
+          )}
+          {tcard?.state === "none" && (
+            <div className="card">
+              <p className="small">עוד אין כרטיס. המחקר בודק מי תרגם את הספר לעברית ואיך, ובונה הנחיות ומילון שמות קבוע. עולה בערך חצי שקל, פעם אחת לספר.</p>
+              <button className="primary" onClick={researchAgain} disabled={!!tcardBusy}>
+                🔎 חקור עכשיו
+              </button>
+            </div>
+          )}
+          {tcard?.card && (() => {
+            const c = tcard.card;
+            const edit = tcardEdit ?? { instructions: c.instructions, glossary: tcard.glossaryText };
+            const dirty = !!tcardEdit && (tcardEdit.instructions !== c.instructions || tcardEdit.glossary !== tcard.glossaryText);
+            const conf = c.confidence === "high" ? "ביטחון גבוה" : c.confidence === "medium" ? "ביטחון בינוני" : "ביטחון נמוך — אין תרגום עברי ידוע";
+            return (
+              <>
+                <div className="card">
+                  {c.hebrewTitle && <div className="tcardTitle">{c.hebrewTitle}</div>}
+                  {c.translations.length ? (
+                    <ul className="tcardList">
+                      {c.translations.map((t, k) => (
+                        <li key={k}>
+                          <b>{t.translator}</b>
+                          {[t.year, t.publisher].filter(Boolean).length ? ` · ${[t.year, t.publisher].filter(Boolean).join(" · ")}` : ""}
+                          {t.notes && <div className="muted small">{t.notes}</div>}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="muted small">לא נמצא תרגום עברי.</div>
+                  )}
+                  {c.model && (
+                    <p className="small" style={{ marginTop: 8 }}>
+                      <b>מה אנחנו מחקים: </b>
+                      {c.model}
+                    </p>
+                  )}
+                  <p className="small" style={{ marginTop: 6 }}>{c.approach}</p>
+                  <div className="row small muted" style={{ gap: 6, marginTop: 6 }}>
+                    <span className="pill">{conf}</span>
+                    <span>
+                      {c.source === "edit" ? "נערך ידנית" : "ממחקר"} · {new Date(c.createdAt).toLocaleDateString("he-IL")}
+                      {c.cost && c.cost.usd > 0 ? ` · המחקר עלה בערך ${Math.max(1, Math.round(c.cost.usd * 370))} אג׳` : ""}
+                    </span>
+                  </div>
+                </div>
+
+                <label className="tcardLabel">ההנחיות למתרגם (שורה לכל הנחיה)</label>
+                <textarea className="tcardText" dir="rtl" rows={8} value={edit.instructions} onChange={(e) => setTcardEdit({ ...edit, instructions: e.target.value })} />
+                <label className="tcardLabel">מילון קבוע — מקור = עברית (הערה אחרי //)</label>
+                <textarea className="tcardText" dir="ltr" rows={8} value={edit.glossary} onChange={(e) => setTcardEdit({ ...edit, glossary: e.target.value })} />
+                {dirty && (
+                  <div className="row" style={{ gap: 8, marginTop: 6 }}>
+                    <button className="grow primary" onClick={saveCardEdit} disabled={!!tcardBusy}>
+                      {tcardBusy === "save" ? <span className="spinner" /> : "💾"} שמור שינויים
+                    </button>
+                    <button className="grow ghost" onClick={() => setTcardEdit(null)} disabled={!!tcardBusy}>
+                      בטל
+                    </button>
+                  </div>
+                )}
+
+                <button className="ghost" style={{ width: "100%", marginTop: 10 }} onClick={sampleCard} disabled={!!tcardBusy}>
+                  {tcardBusy === "sample" ? (
+                    <>
+                      <span className="spinner" /> מתרגם דוגמה…
+                    </>
+                  ) : (
+                    "👁 דוגמה: הקטע הנוכחי לפי הכרטיס"
+                  )}
+                </button>
+                {tcardSample && (
+                  <div className="missedBox tcardSample" dir="rtl">
+                    <div className="muted small">קטע {tcardSample.section + 1} (דוגמה, לא נשמרת)</div>
+                    {tcardSample.text.split(/\n\n+/).map((p, k) => (
+                      <p key={k}>{p}</p>
+                    ))}
+                  </div>
+                )}
+
+                {tcard.older > 0 ? (
+                  <>
+                    <p className="muted small" style={{ marginTop: 12 }}>
+                      {tcard.older} קטעים כבר תורגמו לפני הכרטיס הזה. "תרגם מחדש" יתרגם גם אותם לפיו — רק כשתגיע אליהם בהאזנה.
+                    </p>
+                    <button className="primary" style={{ width: "100%" }} onClick={() => applyCard(true)} disabled={!!tcardBusy}>
+                      {tcardBusy === "apply" ? <span className="spinner" /> : "🎧"} תרגם מחדש לפי הכרטיס והאזן
+                    </button>
+                    <button className="ghost" style={{ width: "100%", marginTop: 6 }} onClick={() => applyCard(false)} disabled={!!tcardBusy}>
+                      האזן בעברית — רק תרגומים חדשים לפי הכרטיס
+                    </button>
+                  </>
+                ) : (
+                  <button className="primary" style={{ width: "100%", marginTop: 12 }} onClick={() => applyCard(false)} disabled={!!tcardBusy}>
+                    {tcardBusy === "apply" ? <span className="spinner" /> : "🎧"} תרגם לפי הכרטיס והאזן בעברית
+                  </button>
+                )}
+
+                {c.sources.length > 0 && (
+                  <details className="tcardMore">
+                    <summary>מקורות ({c.sources.length})</summary>
+                    <ul className="tcardList">
+                      {c.sources.map((s, k) => (
+                        <li key={k}>
+                          <a href={s.url} target="_blank" rel="noreferrer">
+                            {s.title}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                {c.report && (
+                  <details className="tcardMore">
+                    <summary>דוח המחקר המלא</summary>
+                    <div className="tcardReport">{c.report}</div>
+                  </details>
+                )}
+                <button className="ghost" style={{ width: "100%", marginTop: 10 }} onClick={researchAgain} disabled={!!tcardBusy || tcard.state === "researching"}>
+                  🔎 חקור מחדש
+                </button>
+              </>
+            );
+          })()}
         </div>
       )}
 

@@ -1,25 +1,26 @@
 // הכנה מראש: מייצרים שמע לקטעים מהמקום הנוכחי ועד סוף הפרק השני הבא, בסדר ההאזנה.
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
-import { getBook, getProgress, ensureAudio, ensureTranslation, type Book } from "./books";
+import { getBook, getProgress, ensureAudio, ensureTranslation, heDir, heMapPath, heTextPath, trSuffix, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { KOKORO_VERSION, KOKORO_DEFAULT, isKokoroVoice } from "./kokoro-voices";
 
 export const CHAPTERS_AHEAD = 2;
 
+// כל מה שנוצר מהתרגום (שמע עברי, תקצירים, שאלות, דוגמת קול) — בנתיב של דור התרגום (trSuffix), כדי ש"תרגם מחדש" יתחיל נקי
 const P = {
   lock: (id: string) => `books/${id}/prep.lock.json`,
-  heMap: (id: string) => `books/${id}/he.json`,
-  audioDir: (id: string, voice: string, lang: "he" | "en" = "he") => `books/${id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION}/`,
-  recap: (id: string, i: number, voice: string) => `books/${id}/recap/${voice}-${TTS_VERSION}/${i}`,
-  question: (id: string, c: number, voice: string) => `books/${id}/questions/${voice}-${TTS_VERSION}-p6/${c}`, // p6 = עם 6 שניות שקט בסוף
-  preview: (id: string, voice: string) => `books/${id}/preview/${voice}-${isKokoroVoice(voice) ? KOKORO_VERSION : TTS_VERSION}.mp3`,
+  audioDir: (book: Book, voice: string, lang: "he" | "en" = "he") =>
+    `books/${book.id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION + trSuffix(book)}/`,
+  recap: (book: Book, i: number, voice: string) => `books/${book.id}/recap/${voice}-${TTS_VERSION}${trSuffix(book)}/${i}`,
+  questionDir: (book: Book, voice: string) => `books/${book.id}/questions/${voice}-${TTS_VERSION}-p6${trSuffix(book)}/`, // p6 = עם 6 שניות שקט בסוף
+  preview: (book: Book, voice: string) => `books/${book.id}/preview/${voice}-${isKokoroVoice(voice) ? KOKORO_VERSION : TTS_VERSION + trSuffix(book)}.mp3`,
 };
 
 /** תיקיות השמע והשאלות — לבניית הזרם הרציף. */
-export const audioDirFor = (book: Book, voice: string, lang: "he" | "en") => P.audioDir(book.id, voice, lang);
-export const questionDirFor = (book: Book, voice: string) => `books/${book.id}/questions/${voice}-${TTS_VERSION}-p6/`;
+export const audioDirFor = (book: Book, voice: string, lang: "he" | "en") => P.audioDir(book, voice, lang);
+export const questionDirFor = (book: Book, voice: string) => P.questionDir(book, voice);
 
 /** שפת השמע בפועל: "he" או (במצב מקור, בספר שאינו עברי) "en". */
 export function audioLang(book: Book, lang: "he" | "orig" | undefined): "he" | "en" {
@@ -28,7 +29,7 @@ export function audioLang(book: Book, lang: "he" | "orig" | undefined): "he" | "
 
 /** אילו קטעים כבר יש להם שמע בשפה הזו ובקול הזה. */
 export async function readyMap(book: Book, voice: string, lang: "he" | "en" = "he"): Promise<number[]> {
-  const dir = P.audioDir(book.id, voice, lang);
+  const dir = P.audioDir(book, voice, lang);
   const paths = await store.listPaths(dir);
   return paths
     .map((p) => p.slice(dir.length))
@@ -138,22 +139,35 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
 /** מפת התרגומים לתצוגה (קובץ אחד במקום מאות קריאות). */
 export async function readHeMap(book: Book): Promise<Record<number, string>> {
   if (book.lang === "he") return Object.fromEntries(book.sections.map((s) => [s.i, s.text]));
-  return (await store.readJSON<Record<number, string>>(P.heMap(book.id))) ?? {};
+  return (await store.readJSON<Record<number, string>>(heMapPath(book))) ?? {};
 }
 
 async function mergeHeMap(book: Book, ready: number[]) {
   if (book.lang === "he") return;
-  const map = (await store.readJSON<Record<number, string>>(P.heMap(book.id))) ?? {};
-  // קודם מה שמוכן לשמע, אחר כך כל השאר (תרגומים שנוצרו בעבר בקול אחר) — עד 120 בכל סיבוב
+  // קוראים רק תרגומים שבאמת קיימים (רשימה אחת), ולא מנחשים מאות קבצים חסרים
+  const dir = heDir(book);
+  const existing = new Set(
+    (await store.listPaths(dir))
+      .map((p) => p.slice(dir.length).match(/^(\d+)\.txt$/)?.[1])
+      .filter((x): x is string => !!x)
+      .map(Number),
+  );
+  if (!existing.size) return;
+  const map = (await store.readJSON<Record<number, string>>(heMapPath(book))) ?? {};
+  // קודם מה שמוכן לשמע, אחר כך כל השאר — עד 120 בכל סיבוב
   const readySet = new Set(ready);
-  const rest = book.sections.map((s) => s.i).filter((i) => !readySet.has(i));
-  const missing = [...ready, ...rest].filter((i) => !map[i]).slice(0, 120);
+  const order = [...ready, ...book.sections.map((s) => s.i).filter((i) => !readySet.has(i))];
+  const missing = order.filter((i) => existing.has(i) && !map[i]).slice(0, 120);
   if (!missing.length) return;
-  const texts = await Promise.all(missing.map((i) => store.readText(`books/${book.id}/he/${i}.txt`)));
+  const texts = await Promise.all(missing.map((i) => store.readText(heTextPath(book, i))));
+  let added = 0;
   missing.forEach((i, k) => {
-    if (texts[k]) map[i] = texts[k]!;
+    if (texts[k]) {
+      map[i] = texts[k]!;
+      added++;
+    }
   });
-  await store.writeJSON(P.heMap(book.id), map);
+  if (added) await store.writeJSON(heMapPath(book), map);
 }
 
 /** טקסט בעברית של קטעים (ממפת התרגומים, עם השלמה מהקבצים הבודדים). */
@@ -165,7 +179,7 @@ export async function heTexts(book: Book, idx: number[]): Promise<Record<number,
     if (map[i]) out[i] = map[i];
     else missing.push(i);
   }
-  const texts = await Promise.all(missing.slice(0, 40).map((i) => store.readText(`books/${book.id}/he/${i}.txt`)));
+  const texts = await Promise.all(missing.slice(0, 40).map((i) => store.readText(heTextPath(book, i))));
   missing.slice(0, 40).forEach((i, k) => {
     if (texts[k]) out[i] = texts[k]!;
   });
@@ -184,7 +198,7 @@ export async function speak(text: string, voice: string, pathNoExt: string, trai
 
 /** תקציר קצר בחזרה אחרי הפסקה: מה שמעת עד הקטע הזה (לא מעבר). */
 export async function recap(book: Book, upto: number, voice = VOICE): Promise<{ text: string; url: string }> {
-  const base = P.recap(book.id, upto, voice);
+  const base = P.recap(book, upto, voice);
   let text = await store.readText(base + ".txt");
   if (!text) {
     const from = Math.max(0, upto - 8);
@@ -201,7 +215,7 @@ export async function recap(book: Book, upto: number, voice = VOICE): Promise<{ 
 
 /** שאלה אחת לסוף פרק — שליפה מהזיכרון, לא הסבר. */
 export async function chapterQuestion(book: Book, c: number, voice = VOICE): Promise<{ text: string; url: string }> {
-  const base = P.question(book.id, c, voice);
+  const base = `${P.questionDir(book, voice)}${c}`;
   let text = await store.readText(base + ".txt");
   if (!text) {
     const ch = book.chapters[c];
@@ -221,7 +235,7 @@ export async function chapterQuestion(book: Book, c: number, voice = VOICE): Pro
 
 /** דוגמת קול: פסקה מהספר הנוכחי בקול מסוים (להשוואה בין קולות). */
 export async function voicePreview(book: Book, voice: string): Promise<string> {
-  const p = P.preview(book.id, voice);
+  const p = P.preview(book, voice);
   const existing = await store.exists(p);
   if (existing) return existing;
   const i = Math.min(1, book.sections.length - 1);

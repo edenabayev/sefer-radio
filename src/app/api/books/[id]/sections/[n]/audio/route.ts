@@ -4,7 +4,7 @@ import { VOICE, VOICES } from "@/lib/gemini";
 import { isKokoroVoice, KOKORO_DEFAULT } from "@/lib/kokoro-voices";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 800; // בספר חדש באנגלית הקטע הראשון בעברית מחכה לכרטיס התרגום (מחקר של דקה-שלוש)
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string; n: string }> }) {
   if (!authorized(req)) return fail("unauthorized", 401);

@@ -1,6 +1,7 @@
 import { ok, fail, authorized } from "@/lib/api";
 import { getBook, getProgress } from "@/lib/books";
-import { readHeMap, readyMap, audioLang } from "@/lib/prepare";
+import { readHeMap, readyMap, audioLang, questionDirFor } from "@/lib/prepare";
+import * as store from "@/lib/storage";
 import { VOICE } from "@/lib/gemini";
 import { isKokoroVoice, KOKORO_DEFAULT } from "@/lib/kokoro-voices";
 
@@ -17,8 +18,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     const lang = audioLang(book, sp.get("lang") === "orig" ? "orig" : sp.get("lang") === "he" ? "he" : progress.lang);
     const wanted = sp.get("voice");
     const voice = lang === "en" ? (isKokoroVoice(wanted) ? wanted : progress.voiceEn || KOKORO_DEFAULT) : (wanted && !isKokoroVoice(wanted) ? wanted : progress.voice || VOICE);
-    const [he, ready] = await Promise.all([readHeMap(book), readyMap(book, voice, lang)]);
-    return ok({ he, ready, voice, lang });
+    const qDir = questionDirFor(book, voice);
+    const [he, ready, qPaths] = await Promise.all([readHeMap(book), readyMap(book, voice, lang), lang === "he" ? store.listPaths(qDir) : Promise.resolve([] as string[])]);
+    // שאלות סוף פרק שכבר מוכנות — כדי שהנגן יבנה מחדש זרם שנבנה לפניהן
+    const questions = qPaths.map((p) => p.slice(qDir.length).match(/^(\d+)\.mp3$/)?.[1]).filter((x): x is string => !!x).map(Number);
+    return ok({ he, ready, questions, voice, lang });
   } catch (e) {
     return fail(e);
   }

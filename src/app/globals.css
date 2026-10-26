@@ -602,3 +602,72 @@ h2 {
   line-height: 1.55;
   white-space: pre-wrap;
 }
+
+/* כרטיס תרגום */
+.tcardSheet {
+  max-height: 88dvh;
+}
+.tcardTitle {
+  font-weight: 700;
+  font-size: 1.05em;
+  margin-bottom: 6px;
+}
+.tcardList {
+  margin: 4px 0 0;
+  padding-inline-start: 18px;
+  line-height: 1.5;
+}
+.tcardList li {
+  margin: 4px 0;
+}
+.tcardLabel {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 0.9em;
+  color: var(--muted);
+}
+.tcardText {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.92em;
+  line-height: 1.5;
+  resize: vertical;
+}
+.tcardText:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.tcardSample {
+  white-space: normal;
+}
+.tcardSample p {
+  margin: 0.5em 0;
+}
+.tcardMore {
+  margin-top: 10px;
+  font-size: 0.92em;
+}
+.tcardMore summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding: 6px 0;
+}
+.tcardMore a {
+  color: var(--accent);
+  word-break: break-word;
+}
+.tcardReport {
+  white-space: pre-wrap;
+  line-height: 1.55;
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  max-height: 40dvh;
+  overflow: auto;
+}

@@ -58,8 +58,16 @@ await playing();
 await page.waitForSelector(".para.now", { timeout: 30000 });
 log("playing, highlighted para in section", await page.$eval(".sec.cur", (el) => el.id));
 
-// מרגע ▶ הראשון ההכנה ברקע רצה — מחכים שכל הקטעים יהיו מוכנים (ספר קצר במצב דמה)
-await page.waitForFunction(() => document.querySelectorAll(".sec:not(.notReady)").length >= 1, null, { timeout: 90000 });
+// מרגע ▶ הראשון ההכנה ברקע רצה — מחכים שכל קטעי הפרק הראשון והשאלה שלו יהיו מוכנים בשרת, ושהנגן יידע
+const firstBookId = page.url().split("/book/")[1];
+for (let k = 0; ; k++) {
+  const t = await page.evaluate(async (id) => { const pw = localStorage.getItem("app_pw") || ""; return fetch(`/api/books/${id}/text?lang=he`, { headers: { "x-app-password": pw } }).then((r) => r.json()); }, firstBookId);
+  if (t.questions?.includes(0)) break;
+  if (k > 180) throw new Error("chapter question was never prepared");
+  await page.waitForTimeout(500);
+}
+const firstChapterSize = await page.evaluate(() => document.querySelector("section").querySelectorAll(".sec").length);
+await page.waitForFunction((n) => document.querySelectorAll("section:first-of-type .sec:not(.notReady)").length >= n, firstChapterSize, { timeout: 90000 });
 log("prepared sections:", await page.$$eval(".sec:not(.notReady)", (els) => els.length));
 const heText = await page.$eval(".sec.cur .para", (el) => el.textContent);
 if (!heText.startsWith("[דמה]")) throw new Error("expected Hebrew (mock) text in current section");
@@ -83,12 +91,12 @@ await atSection(chapterEnd + 1);
 log("continued to next chapter:", await page.$eval(".sec.cur", (el) => el.id));
 
 // מעבר למקור
-await page.click("text=מקור");
+await page.click("button.chip:has-text('מקור')");
 await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && !a.paused && (a.dataset.stream || a.src).includes("lang=orig"); }, null, { timeout: 60000 });
 const orig = await page.$eval(".sec.cur .para", (el) => el.textContent);
 if (orig.startsWith("[דמה]")) throw new Error("orig should be English");
 log("orig ok");
-await page.click("text=עברית");
+await page.click("button.chip:has-text('עברית')");
 await page.waitForFunction(() => { const a = document.querySelector("audio"); return a && (a.dataset.stream || a.src).includes("lang=he"); }, null, { timeout: 60000 });
 
 // בחירת קול: פותחים את הגיליון ובוחרים קול אחר
@@ -118,7 +126,7 @@ await page.click("text=הוסף ספר משלי");
 await page.setInputFiles('input[type="file"]', path.resolve("tests/fixtures/hebrew.txt"));
 await page.waitForURL(/\/book\//, { timeout: 60000 });
 await page.waitForSelector(".bigPlay:not([disabled])");
-if ((await page.$("text=מקור")) !== null) throw new Error("hebrew book should not show language toggle");
+if ((await page.$("button.chip:has-text('מקור')")) !== null) throw new Error("hebrew book should not show language toggle");
 await page.click(".bigPlay");
 await playing();
 log("hebrew book ok");

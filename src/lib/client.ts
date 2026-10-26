@@ -101,7 +101,35 @@ export interface Manifest {
   qs: number[];
   lang: "he" | "en";
   voice: string;
+  gen?: string; // דור התרגום
   items: StreamItem[];
   totalSeconds: number;
   totalBytes: number;
+}
+
+export interface TranslationCard {
+  id: string;
+  createdAt: string;
+  source: "research" | "edit";
+  hebrewTitle?: string;
+  translations: { translator: string; year?: string; publisher?: string; notes?: string }[];
+  model?: string;
+  approach: string;
+  instructions: string;
+  glossary: { en: string; he: string; note?: string }[];
+  confidence: "high" | "medium" | "low";
+  sources: { title: string; url: string }[];
+  report?: string;
+  cost?: { usd: number; searches: number };
+}
+export interface CardState {
+  state: "none" | "researching" | "error" | "ready";
+  startedAt?: string;
+  at?: string;
+  error?: string;
+  card: TranslationCard | null;
+  glossaryText: string;
+  translated: number;
+  older: number;
+  gen: string | null;
 }

@@ -23,9 +23,9 @@ function ai(): GoogleGenAI {
   return client;
 }
 
-async function withThinkingFallback<T>(fn: (cfg: GenerateContentConfig) => Promise<T>, base: GenerateContentConfig): Promise<T> {
+async function withThinkingFallback<T>(fn: (cfg: GenerateContentConfig) => Promise<T>, base: GenerateContentConfig, level: "LOW" | "MEDIUM" | "HIGH" = "LOW"): Promise<T> {
   try {
-    return await fn({ ...base, thinkingConfig: { thinkingLevel: "LOW" as never } });
+    return await fn({ ...base, thinkingConfig: { thinkingLevel: level as never } });
   } catch (e) {
     const msg = String((e as Error)?.message || e);
     if (/thinking|unsupported|INVALID_ARGUMENT|400/i.test(msg)) return fn(base);
@@ -33,12 +33,13 @@ async function withThinkingFallback<T>(fn: (cfg: GenerateContentConfig) => Promi
   }
 }
 
-export async function genText(prompt: string, system?: string, maxOutputTokens = 8192): Promise<string> {
+export async function genText(prompt: string, system?: string, maxOutputTokens = 8192, opts: { thinking?: "LOW" | "MEDIUM" | "HIGH"; model?: string } = {}): Promise<string> {
   if (MOCK) return `[דמה] ${prompt.slice(0, 200)}`;
   const base: GenerateContentConfig = { systemInstruction: system, maxOutputTokens, temperature: 0.4 };
   const res = await withThinkingFallback(
-    (config) => ai().models.generateContent({ model: MODELS.text, contents: prompt, config }),
+    (config) => ai().models.generateContent({ model: opts.model || MODELS.text, contents: prompt, config }),
     base,
+    opts.thinking,
   );
   const text = res.text ?? "";
   if (!text.trim()) throw new Error("Gemini החזיר תשובה ריקה (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
@@ -67,6 +68,80 @@ export async function genDeep(prompt: string, system?: string, maxOutputTokens =
     } catch {
       return genText(prompt, system, maxOutputTokens);
     }
+  }
+}
+
+/** כמה טוקנים (וחיפושים) עלתה קריאה — כדי להראות עלות אמיתית ולא הערכה. */
+export interface Usage {
+  model: string;
+  input: number;
+  output: number; // כולל "חשיבה"
+  searches: number;
+}
+function usageOf(model: string, res: { usageMetadata?: { promptTokenCount?: number; toolUsePromptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }, searches = 0): Usage {
+  const u = res.usageMetadata ?? {};
+  return { model, input: (u.promptTokenCount ?? 0) + (u.toolUsePromptTokenCount ?? 0), output: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0), searches };
+}
+/** מחיר בדולרים לפי מחירון Gemini (לכל מיליון טוקנים): Pro 2/12, Flash 0.75/3.75. חיפושים: 5,000 בחודש בחינם. */
+export function usageCostUsd(u: Usage[]): number {
+  return u.reduce((sum, x) => {
+    const [pin, pout] = /pro/i.test(x.model) ? [2, 12] : [0.75, 3.75];
+    return sum + (x.input * pin + x.output * pout) / 1e6;
+  }, 0);
+}
+
+/** מחקר עם חיפוש בגוגל (המודל הגדול): טקסט + המקורות שעליהם נשען. */
+export async function researchWithSearch(prompt: string, system?: string): Promise<{ text: string; sources: { title: string; url: string }[]; usage: Usage }> {
+  if (MOCK) return { text: `[דמה-מחקר] ${prompt.slice(0, 160)}`, sources: [{ title: "example.com", url: "https://example.com" }], usage: { model: "mock", input: 0, output: 0, searches: 0 } };
+  const run = async (model: string, timeout: number) => {
+    const res = await ai().models.generateContent({
+      model,
+      contents: prompt,
+      config: { systemInstruction: system, maxOutputTokens: 12000, temperature: 0.3, tools: [{ googleSearch: {} }], httpOptions: { timeout } },
+    });
+    const text = (res.text ?? "").trim();
+    if (!text) throw new Error("מחקר ריק (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
+    const gm = res.candidates?.[0]?.groundingMetadata;
+    const chunks = gm?.groundingChunks ?? [];
+    const seen = new Set<string>();
+    const sources: { title: string; url: string }[] = [];
+    for (const c of chunks) {
+      const url = c.web?.uri;
+      const title = c.web?.title || c.web?.domain || url;
+      if (!url || !title || seen.has(title)) continue;
+      seen.add(title);
+      sources.push({ title, url });
+    }
+    return { text, sources, usage: usageOf(model, res, gm?.webSearchQueries?.length ?? 0) };
+  };
+  try {
+    return await run(MODELS.deep, 180_000);
+  } catch (e) {
+    console.warn("research with deep model failed, trying text model:", (e as Error).message);
+    return run(MODELS.text, 120_000);
+  }
+}
+
+/** תשובה במבנה JSON קבוע (סכמה). */
+export async function genJson<T>(prompt: string, system: string, schema: Record<string, unknown>, mock: T, model = MODELS.deep, onUsage?: (u: Usage) => void): Promise<T> {
+  if (MOCK) return mock;
+  const run = async (m: string, timeout: number) => {
+    const res = await ai().models.generateContent({
+      model: m,
+      contents: prompt,
+      config: { systemInstruction: system, maxOutputTokens: 16000, temperature: 0.3, responseMimeType: "application/json", responseJsonSchema: schema, httpOptions: { timeout } },
+    });
+    onUsage?.(usageOf(m, res));
+    const text = (res.text ?? "").trim();
+    const j = text.match(/\{[\s\S]*\}/);
+    if (!j) throw new Error("לא התקבל JSON (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
+    return JSON.parse(j[0]) as T;
+  };
+  try {
+    return await run(model, 150_000);
+  } catch (e) {
+    console.warn("genJson failed on", model, (e as Error).message);
+    return run(MODELS.text, 120_000);
   }
 }
 

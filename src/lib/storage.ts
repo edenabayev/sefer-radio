@@ -130,6 +130,7 @@ export interface FileInfo {
   path: string;
   size: number;
   url: string;
+  uploadedAt?: number; // ms
 }
 
 /** רשימת קבצים עם גודל — לבניית זרם רציף (הגודל קובע את משך השמע ב-MP3 בקצב קבוע). */
@@ -139,7 +140,7 @@ export async function listFiles(prefix: string): Promise<FileInfo[]> {
     let cursor: string | undefined;
     do {
       const r = await list({ prefix, cursor, limit: 1000 });
-      out.push(...r.blobs.map((b) => ({ path: b.pathname, size: b.size, url: b.url })));
+      out.push(...r.blobs.map((b) => ({ path: b.pathname, size: b.size, url: b.url, uploadedAt: new Date(b.uploadedAt).getTime() })));
       cursor = r.hasMore ? r.cursor : undefined;
     } while (cursor);
     return out;
@@ -149,7 +150,7 @@ export async function listFiles(prefix: string): Promise<FileInfo[]> {
   for (const p of paths) {
     try {
       const st = await fs.stat(localPath(p));
-      out.push({ path: p, size: st.size, url: `/api/local-file?p=${encodeURIComponent(p)}` });
+      out.push({ path: p, size: st.size, url: `/api/local-file?p=${encodeURIComponent(p)}`, uploadedAt: st.mtimeMs });
     } catch {
       /* נעלם בינתיים */
     }

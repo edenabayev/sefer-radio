@@ -31,6 +31,9 @@ export interface Book {
   extraction?: Extraction;
   summary?: string; // תקציר קצר לשימוש המורה
   background?: string; // כרטיס רקע לשיחה: מחבר, תקופה, רעיונות, התקבלות — נוצר פעם אחת ע"י המוח הגדול
+  /** דור התרגום (לא נשמר ב-book.json — נקרא מקבצי סימון). "תרגם מחדש לפי הכרטיס" פותח דור חדש:
+   *  תרגומים ושמע עברי בנתיבים חדשים, והישנים נשארים בצד. בלי דור — הנתיבים המקוריים. */
+  trGen?: string;
 }
 
 export interface BookMeta {
@@ -57,10 +60,18 @@ export interface Progress {
   updatedAt: string;
 }
 
+/** סיומת הדור לנתיבים של תרגום ושמע עברי (רק בספר שאינו בעברית, ורק אחרי "תרגם מחדש"). */
+export const trSuffix = (book: Pick<Book, "lang" | "trGen">) => (book.trGen && book.lang !== "he" ? `-t${book.trGen}` : "");
+/** תיקיית התרגומים לעברית של הדור הנוכחי. */
+export const heDir = (book: Pick<Book, "id" | "lang" | "trGen">) => `books/${book.id}/he${book.trGen && book.lang !== "he" ? "-" + book.trGen : ""}/`;
+export const heTextPath = (book: Pick<Book, "id" | "lang" | "trGen">, i: number) => `${heDir(book)}${i}.txt`;
+export const heMapPath = (book: Pick<Book, "id" | "lang" | "trGen">) => `books/${book.id}/he${book.trGen && book.lang !== "he" ? "-" + book.trGen : ""}.json`;
+
 const P = {
   book: (id: string) => `books/${id}/book.json`,
-  he: (id: string, i: number) => `books/${id}/he/${i}.txt`,
-  audio: (id: string, i: number, lang: string, voice: string) => `books/${id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION}/${i}.mp3`,
+  trGen: (id: string) => `books/${id}/trgen/`,
+  audio: (book: Book, i: number, lang: string, voice: string) =>
+    `books/${book.id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION + trSuffix(book)}/${i}.mp3`,
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
@@ -105,11 +116,40 @@ export function toMeta(b: Book): BookMeta {
 }
 
 export async function getBook(id: string): Promise<Book | null> {
-  return store.readJSON<Book>(P.book(id));
+  const b = await store.readJSON<Book>(P.book(id));
+  if (b) {
+    delete b.trGen;
+    if (b.lang !== "he") b.trGen = await readTrGen(id);
+  }
+  return b;
 }
 
 export async function saveBook(b: Book) {
-  await store.writeJSON(P.book(b.id), b);
+  const { trGen: _gen, ...rest } = b;
+  void _gen;
+  await store.writeJSON(P.book(b.id), rest);
+}
+
+/** הדור הנוכחי של התרגום: קובץ הסימון האחרון (שמות ייחודיים — רשימת קבצים תמיד טרייה, בלי גרסה ישנה). */
+export async function readTrGen(id: string): Promise<string | undefined> {
+  const dir = P.trGen(id);
+  const ids = (await store.listPaths(dir)).map((p) => p.slice(dir.length).match(/^(\d+)\.json$/)?.[1]).filter((x): x is string => !!x);
+  return ids.sort((a, b) => Number(b) - Number(a))[0];
+}
+
+/** "תרגם מחדש לפי הכרטיס": דור חדש — מהרגע הזה תרגומים ושמע עברי נוצרים מחדש (רק כשמאזינים להם). */
+export async function newTrGen(id: string, cardId?: string, now = Date.now()): Promise<string> {
+  const gen = String(now);
+  await store.writeJSON(`${P.trGen(id)}${gen}.json`, { at: new Date(now).toISOString(), card: cardId });
+  return gen;
+}
+
+/** כמה קטעים כבר תורגמו בדור הנוכחי, וכמה מהם לפני תאריך מסוים (למשל לפני הכרטיס האחרון). */
+export async function translationStats(book: Book, before?: string): Promise<{ translated: number; older: number }> {
+  if (book.lang === "he") return { translated: 0, older: 0 };
+  const files = (await store.listFiles(heDir(book))).filter((f) => /\/\d+\.txt$/.test(f.path));
+  const t = before ? new Date(before).getTime() : 0;
+  return { translated: files.length, older: before ? files.filter((f) => f.uploadedAt != null && f.uploadedAt < t).length : files.length };
 }
 
 export async function listBooks(): Promise<BookMeta[]> {
@@ -350,21 +390,33 @@ export async function extractStep(id: string): Promise<{ book: Book; busy: boole
 
 // ---------- תרגום ----------
 
-export async function ensureTranslation(book: Book, i: number): Promise<string> {
+/** תרגום קטע לעברית — לפי כרטיס התרגום של הספר (אם אין — חוקרים קודם; אם המחקר לא אפשרי עכשיו — בלי כרטיס).
+ *  נשמר פעם אחת לכל דור. עם save:false — דוגמה שלא נשמרת (לבדיקת הכרטיס). */
+export async function ensureTranslation(book: Book, i: number, opts: { save?: boolean; model?: string } = {}): Promise<string> {
   const sec = book.sections[i];
   if (!sec) throw new Error("אין קטע " + i);
   if (book.lang === "he") return sec.text;
-  const cached = await store.readText(P.he(book.id, i));
-  if (cached) return cached;
-  const prev = i > 0 ? book.sections[i - 1].text.slice(-600) : "";
-  const system =
-    "אתה מתרגם ספרותי מעולה לעברית. תרגם את הקטע לעברית טבעית, זורמת ומדויקת, בלשון ימינו, כמו ספר שיצא בהוצאה טובה. " +
-    "שמור על חלוקת הפסקאות. אל תוסיף הערות, כותרות, ניקוד או הסברים — רק את התרגום. " +
-    "אם הקטע הוא כותרת פרק בלבד, תרגם את הכותרת.";
-  const prompt = (prev ? `(הקשר — סוף הקטע הקודם, לא לתרגם:)\n${prev}\n\n` : "") + `(הקטע לתרגום:)\n${sec.text}`;
-  const he = await genText(prompt, system);
-  await store.writeBytes(P.he(book.id, i), he, "text/plain; charset=utf-8");
+  const save = opts.save !== false;
+  if (save) {
+    const cached = await store.readText(heTextPath(book, i));
+    if (cached) return cached;
+  }
+  const { ensureCard, translationPrompt } = await import("./translation");
+  const card = await ensureCard(book, { wait: true }).catch(() => null);
+  const prevHe = i > 0 ? await store.readText(heTextPath(book, i - 1)) : null;
+  const { system, prompt } = translationPrompt(book, i, card, prevHe);
+  const he = cleanTranslation(await genText(prompt, system, 8192, { thinking: "MEDIUM", model: opts.model }));
+  if (save) await store.writeBytes(heTextPath(book, i), he, "text/plain; charset=utf-8");
   return he;
+}
+
+/** מה שהמודל מוסיף לפעמים מסביב לתרגום: "הנה התרגום:", מרכאות קוד, תגיות ההקשר. */
+export function cleanTranslation(t: string): string {
+  return t
+    .replace(/^```[a-z]*\n?|\n?```$/g, "")
+    .replace(/^\s*\((?:הקטע לתרגום|תרגום)[^)]*\):?\s*/u, "")
+    .replace(/^\s*(?:הנה התרגום|התרגום)\s*:\s*\n/u, "")
+    .trim();
 }
 
 // ---------- שמע ----------
@@ -382,7 +434,7 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
   const effLang = lang === "he" ? "he" : book.lang === "he" ? "he" : "en";
   const text = lang === "he" ? await ensureTranslation(book, i) : sec.text;
   if (effLang === "en") voice = kokoroVoice(voice);
-  const p = P.audio(book.id, i, effLang, voice);
+  const p = P.audio(book, i, effLang, voice);
   const url = await store.exists(p);
   if (url) return { url, text, lang: effLang, cached: true };
   // כותרת הפרק נקראת לפני הקטע הראשון שלו — רק כשהכותרת באותה שפה כמו ההקראה
@@ -444,7 +496,7 @@ export async function ensureExplanation(book: Book, i: number, voice = VOICE): P
 export async function answerQuestion(book: Book, i: number, audio: Buffer, mimeType: string, voice = VOICE): Promise<{ text: string; url: string }> {
   const sec = book.sections[i];
   if (!sec) throw new Error("אין קטע " + i);
-  const he = book.lang === "he" ? sec.text : (await store.readText(P.he(book.id, i))) ?? sec.text;
+  const he = book.lang === "he" ? sec.text : (await store.readText(heTextPath(book, i))) ?? sec.text;
   const explain = (await store.readText(P.explain(book.id, i))) ?? "";
   const summary = book.summary ?? "";
   const context = `הספר: ${book.title}${book.author ? ` מאת ${book.author}` : ""}\n${summary}\n\nהקטע:\n${he}\n\n${explain ? `ההסבר שניתן:\n${explain}` : ""}`;

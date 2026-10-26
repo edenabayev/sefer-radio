@@ -15,6 +15,8 @@ async function handle(req: Request, ctx: { params: Promise<{ id: string }> }, he
     const book = await getBook(id);
     if (!book) return fail("אין ספר כזה", 404);
     const sp = new URL(req.url).searchParams;
+    // הדור שהיה כשהזרם הוגדר (ולא מה שקורה עכשיו) — הזרם יציב
+    if (sp.has("gen") && book.lang !== "he") book.trGen = sp.get("gen") || undefined;
     const progress = await getProgress(id);
     const lang = langFor(book, sp.get("lang"), progress);
     const voice = audioVoiceFor(sp.get("voice"), lang, progress);

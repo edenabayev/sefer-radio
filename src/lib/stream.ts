@@ -23,6 +23,7 @@ export interface Manifest {
   qs: number[]; // פרקים שהשאלה שלהם כלולה
   lang: "he" | "en";
   voice: string;
+  gen?: string; // דור התרגום — כדי שהזרם יישאר בדיוק אותו זרם גם אם בינתיים לחצו "תרגם מחדש"
   items: StreamItem[];
   totalSeconds: number;
   totalBytes: number;
@@ -72,7 +73,7 @@ export async function buildManifest(book: Book, from: number, lang: "he" | "en",
       qs.push(c);
     }
   }
-  return { from, upto, qs, lang, voice, items, totalSeconds: t, totalBytes: bytes };
+  return { from, upto, qs, lang, voice, gen: lang === "he" ? book.trGen : undefined, items, totalSeconds: t, totalBytes: bytes };
 }
 
 /** אותו זרם בדיוק כפי שהוגדר בכתובת (from/upto/qs) — יציב גם אם בינתיים הוכנו עוד קטעים. */
