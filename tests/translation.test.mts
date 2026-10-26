@@ -19,6 +19,7 @@ import {
   AlreadyResearching,
   normalizeCard,
   verifyNotes,
+  completeNames,
 } from "../src/lib/translation";
 import { getBook, saveBook, newTrGen, readTrGen, translationStats, ensureTranslation, cleanTranslation, heDir, heTextPath, heMapPath, trSuffix, type Book } from "../src/lib/books";
 import { audioDirFor, questionDirFor, heTexts } from "../src/lib/prepare";
@@ -152,6 +153,13 @@ const card1 = await researchCard(book, run);
 assert.equal((await cardStatus(book.id)).state, "ready");
 assert.equal((await latestCard(book.id))?.id, card1.id);
 assert.ok(card1.glossary.some((g) => g.en === "Marcus"), "המילון בדמה נבנה מהשמות שנמצאו");
+// השלמת שמות חסרים: רק שמות שחוזרים 5+ פעמים ושלא מכוסים (גם לא כחלק משם מלא)
+const completed = await completeNames(
+  book,
+  [{ en: "Marcus Lane", he: "מרקוס ליין" }],
+  [{ name: "Marcus", count: 9 }, { name: "Benny", count: 7 }, { name: "Chicago", count: 3 }],
+);
+assert.deepEqual(completed.map((g) => g.en), ["Marcus Lane", "Benny"]);
 assert.ok(card1.sources.length >= 1 && card1.report);
 
 // ensureCard: כרטיס קיים — בלי מחקר חדש

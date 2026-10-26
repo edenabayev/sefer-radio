@@ -5,7 +5,7 @@
 // כי Blob מחזיר לזמן מה גרסה ישנה של קובץ שנדרס.
 import * as store from "./storage";
 import type { Book } from "./books";
-import { researchWithSearch, genJson, usageCostUsd, MOCK, type Usage } from "./gemini";
+import { researchWithSearch, genJson, usageCostUsd, MOCK, MODELS, type Usage } from "./gemini";
 import { joinBrokenParagraphs } from "./text";
 
 export interface Translation {
@@ -220,7 +220,7 @@ export function structurePrompt(book: Book, report: string, names: { name: strin
     "- approach: 3 עד 5 משפטים פשוטים, למאזין, שמסבירים איך המתרגם הזה עובד. אם יש ביקורת מרכזית על התרגום — משפט אחד שמתאר אותה (בלי לשנות בגללה את ההנחיות).\n" +
     "- instructions: 8 עד 15 הנחיות קונקרטיות שמתארות את השיטה של המתרגם הנבחר כפי שהיא: המשלב, בחירות המילים הידועות שלו (כולל מילות סלנג שהוא משתמש בהן), " +
     "הקול של המספר, קללות, ביטויים חוזרים ואיך לתרגם אותם בעקביות, שמות, ניבים, קצב המשפטים. כל הנחיה במשפט או שניים.\n" +
-    "- glossary: מילון קבוע. (א) כל השמות והמקומות מהרשימה שמופיעים 5 פעמים ומעלה (וגם פחות, אם הם חשובים), בכתיב עברי עקבי — כפי שבתרגום הנבחר אם ידוע; " +
+    "- glossary: מילון קבוע. (א) כל השמות והמקומות מהרשימה שמופיעים 5 פעמים ומעלה (וגם פחות, אם הם חשובים), בכתיב עברי עקבי — כפי שבתרגום הנבחר אם ידוע — ונוח להקראה בקול (ראשי תיבות של שם כמו שהוגים אותם, למשל די־בי); " +
     "(ב) לפחות 10 ביטויים, מילים טעונות וקללות שחוזרים אצל המספר (חפש אותם בקטעים מהספר), עם תרגום עקבי ברוח המתרגם. " +
     "השדה en — בדיוק כפי שהצורה מופיעה בטקסט המקור. note — 'לפי התרגום של …' רק אם המילה העברית הזו מופיעה בדוח כבחירה של המתרגם, אחרת 'הצעה'. עד 90 ערכים.\n" +
     "- confidence: high אם נמצא תרגום ומקורות טובים על השיטה שלו; medium אם יש תרגום אבל מעט מידע על השיטה; low אם אין תרגום."
@@ -310,6 +310,34 @@ export function normalizeCard(j: CardJson): Omit<TranslationCard, "id" | "create
   };
 }
 
+/** שם שכבר מכוסה במילון — כערך בפני עצמו או כחלק משם מלא ("Holden" בתוך "Holden Caulfield"). */
+const coveredName = (glossary: GlossaryEntry[], name: string) =>
+  glossary.some((g) => g.en.toLowerCase() === name.toLowerCase() || g.en.split(/\s+/).includes(name));
+
+/** שמות שחוזרים 5 פעמים ומעלה וחסרים במילון — תעתיק עברי אחד קבוע לכל אחד (קריאה זולה אחת), כדי שכל שם ייכתב תמיד אותו דבר. */
+export async function completeNames(book: Book, glossary: GlossaryEntry[], names: { name: string; count: number }[], onUsage?: (u: Usage) => void): Promise<GlossaryEntry[]> {
+  const missing = names.filter((n) => n.count >= 5 && !coveredName(glossary, n.name)).slice(0, 40);
+  if (!missing.length) return glossary;
+  const examples = glossary.filter((g) => /^[A-Z]/.test(g.en)).slice(0, 15).map((g) => `${g.en} = ${g.he}`).join(", ");
+  const j = await genJson<{ names: { en: string; he: string }[] }>(
+    `הספר: ${bookLabel(book)}.\nתעתק לעברית את השמות האלה מתוך הספר, בכתיב עברי מקובל (כמו בתרגומים לעברית) ונוח להקראה בקול. ` +
+      `ראשי תיבות של שם — כמו שהוגים אותם (למשל די־בי). מילה שאינה שם (למשל שם של מוסד או מקום) — תרגם כמקובל.\n` +
+      (examples ? `לעקביות, כך כבר נקבעו שמות אחרים: ${examples}\n` : "") +
+      `השמות: ${missing.map((n) => n.name).join(", ")}`,
+    "אתה עורך תרגום. החזר רק את הרשימה המבוקשת.",
+    { type: "object", properties: { names: { type: "array", items: { type: "object", properties: { en: { type: "string" }, he: { type: "string" } }, required: ["en", "he"] } } }, required: ["names"] },
+    { names: missing.map((n) => ({ en: n.name, he: `${n.name}-שם` })) },
+    MODELS.text,
+    onUsage,
+  ).catch(() => ({ names: [] as { en: string; he: string }[] }));
+  const wanted = new Set(missing.map((n) => n.name));
+  const add = (j.names ?? [])
+    .map((x) => ({ en: clean(x?.en, 80), he: clean(x?.he, 80) }))
+    .filter((x) => x.en && x.he && wanted.has(x.en) && !coveredName(glossary, x.en))
+    .map((x) => ({ ...x, note: "הצעה" }));
+  return [...glossary, ...add];
+}
+
 /** רושם ניסיון מחקר (קובץ התחלה). אם כבר רץ מחקר אחר — מוותר (AlreadyResearching). */
 export async function beginResearch(bookId: string, now = Date.now()): Promise<string> {
   const runId = String(now);
@@ -342,9 +370,9 @@ export async function researchCard(book: Book, registeredRun?: string, opts: { r
         : await researchWithSearch(researchPrompt(book), RESEARCH_SYSTEM);
     const usage: Usage[] = [r.usage];
     const j = await genJson<CardJson>(structurePrompt(book, r.text, names, sample), STRUCTURE_SYSTEM, CARD_SCHEMA, mockCard(book, names), undefined, (u) => usage.push(u));
-    const cost = { usd: Math.round(usageCostUsd(usage) * 10000) / 10000, searches: usage.reduce((n, u) => n + u.searches, 0) };
     const norm = normalizeCard(j);
-    norm.glossary = verifyNotes(norm.glossary, r.text);
+    norm.glossary = await completeNames(book, verifyNotes(norm.glossary, r.text), names, (u) => usage.push(u));
+    const cost = { usd: Math.round(usageCostUsd(usage) * 10000) / 10000, searches: usage.reduce((n, u) => n + u.searches, 0) };
     const card = await saveCard(book.id, { ...norm, source: "research", sources: r.sources.slice(0, 15), report: r.text.slice(0, 30000), cost });
     await store.writeJSON(`${dir}${runId}.done.json`, { at: new Date().toISOString(), card: card.id });
     return card;
