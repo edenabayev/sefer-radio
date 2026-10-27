@@ -357,7 +357,13 @@ export async function extractPdfPages(pdf: Buffer, fromPage: number, toPage: num
       }),
     { maxOutputTokens: 65000, temperature: 0 },
   );
-  return (res.text ?? "").trim();
+  const text = (res.text ?? "").trim();
+  if (!text) {
+    // תשובה ריקה היא כישלון, לא "עמודים ריקים": בדרך כלל גוגל מסרב להעתיק טקסט מוגן בזכויות יוצרים
+    const reason = String(res.candidates?.[0]?.finishReason ?? "");
+    throw new Error(/RECITATION|OTHER|BLOCK|SAFETY|PROHIBITED/i.test(reason) ? `גוגל מסרב להעתיק את הטקסט מהקובץ (${reason}) — כנראה בגלל זכויות יוצרים` : `גוגל החזיר טקסט ריק לעמודים ${fromPage}–${toPage} (${reason || "בלי סיבה"})`);
+  }
+  return text;
 }
 
 /** שאלה מוקלטת (קול) על קטע — התשובה כטקסט בעברית. */

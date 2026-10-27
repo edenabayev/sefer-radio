@@ -374,7 +374,7 @@ export async function extractStep(id: string): Promise<{ book: Book; busy: boole
       ex.error = String((e as Error)?.message || e);
     }
     // הטקסט שחולץ נשמר בקובץ נפרד (לא בתוך book.json, שנקרא בכל בקשה) — וכך לעולם לא מחלצים את אותו PDF פעמיים
-    await store.writeBytes(P.extracted(id), markdown, "text/markdown; charset=utf-8");
+    if (markdown) await store.writeBytes(P.extracted(id), markdown, "text/markdown; charset=utf-8"); // Blob לא מקבל קובץ ריק
     ex.markdown = "";
     // בונים מחדש את הקטעים מכל מה שחולץ עד כה — כך אפשר להתחיל להאזין לפני שהספר כולו נקרא
     const built = buildSections(markdownToParagraphs(markdown), book.title);
