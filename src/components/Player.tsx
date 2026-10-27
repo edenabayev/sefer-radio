@@ -220,28 +220,36 @@ export default function Player({ id }: { id: string }) {
   }, [id]);
 
   // ---- קריאת PDF בצעדים ----
+  // תקלה רגעית (רשת, שרת עמוס) — מנסים שוב לבד; שלוש ברצף — עוצרים ומראים כפתור "נסה שוב"
+  const [extractRun, setExtractRun] = useState(0);
+  const [extractErr, setExtractErr] = useState("");
   useEffect(() => {
     if (!book || book.extraction?.status !== "pending") return;
     let stop = false;
     (async () => {
+      let fails = 0;
       while (!stop) {
         const ex = bookRef.current?.extraction;
         if (!ex || ex.status !== "pending") break;
         setLoading(`קורא את הקובץ… עמוד ${ex.nextPage} מתוך ${ex.totalPages}`);
         try {
-          const r = await api<{ busy?: boolean }>(`/api/books/${id}/extract-step`, { method: "POST" });
+          const r = await api<{ busy?: boolean }>(`/api/books/${id}/extract-step`, { method: "POST", body: "{}" });
           if (r.busy) await new Promise((res) => setTimeout(res, 15000)); // השרת קורא ברקע — מחכים ובודקים שוב
           const fresh = await api<BookFull>(`/api/books/${id}`);
           if (stop) break;
+          fails = 0;
           setBook(fresh);
           if (fresh.extraction?.status !== "pending") {
             setLoading("");
             runPrepare();
           }
-          if (fresh.extraction?.status === "error") setErr("תקלה בקריאת הקובץ: " + fresh.extraction.error);
         } catch (e) {
-          setErr("תקלה בקריאת הקובץ: " + (e as Error).message);
-          break;
+          if (++fails >= 3) {
+            setLoading("");
+            setExtractErr((e as Error).message);
+            break;
+          }
+          await new Promise((res) => setTimeout(res, 10000));
         }
       }
     })();
@@ -249,7 +257,23 @@ export default function Player({ id }: { id: string }) {
       stop = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, book?.extraction?.status]);
+  }, [id, book?.extraction?.status, extractRun]);
+  async function retryExtraction() {
+    setExtractErr("");
+    setErr("");
+    setLoading("קורא את הקובץ…");
+    try {
+      await api(`/api/books/${id}/extract-step`, { method: "POST", body: JSON.stringify({ retry: true }) });
+    } catch {
+      /* הלולאה תנסה שוב */
+    }
+    try {
+      setBook(await api<BookFull>(`/api/books/${id}`));
+    } catch {
+      /* ignore */
+    }
+    setExtractRun((n) => n + 1);
+  }
 
   // ---- שמע של קטע: יצירה בשרת אם עוד לא הוכן (הזרם הרציף מנגן רק מה שכבר מוכן) ----
   const fetchAudio = useCallback(
@@ -1212,7 +1236,15 @@ export default function Player({ id }: { id: string }) {
             <div>{interludeText}</div>
           </div>
         )}
-        {noSections && <p className="muted">הטקסט עוד נקרא מהקובץ…</p>}
+        {(book.extraction?.status === "error" || extractErr) && (
+          <div className="card">
+            <div className="err small">תקלה בקריאת הקובץ: {extractErr || book.extraction?.error}</div>
+            <button className="ghost" style={{ marginTop: 8 }} onClick={retryExtraction}>
+              נסה שוב
+            </button>
+          </div>
+        )}
+        {noSections && book.extraction?.status !== "error" && !extractErr && <p className="muted">הטקסט עוד נקרא מהקובץ…</p>}
         {book.chapters.map((c, ci) => (
           <section key={ci}>
             <h2 className="chapterHead" dir="auto">

@@ -349,22 +349,48 @@ export async function rebuildBook(id: string): Promise<Book> {
 }
 
 /** צעד חילוץ אחד (עד PDF_CHUNK_PAGES עמודים). רץ מהלקוח כשהספר פתוח וגם מה-cron ברקע; נעילה מונעת כפילות. */
-export async function extractStep(id: string): Promise<{ book: Book; busy: boolean }> {
+/** קריאת PDF בצעדים. קודם מנסים לקרוא את שכבת הטקסט כאן על השרת (מהיר, חינם, 100 עמודים לצעד, ובלי סירוב של גוגל
+ *  לטקסט מוגן); רק PDF סרוק (בלי טקסט) או בעברית עובר לגוגל, 25 עמודים לצעד. retry — ניסיון מחדש אחרי שגיאה. */
+export const LOCAL_CHUNK_PAGES = 100;
+export async function extractStep(id: string, opts: { retry?: boolean } = {}): Promise<{ book: Book; busy: boolean }> {
   const book = await getBook(id);
   if (!book) throw new Error("אין ספר כזה");
   const ex = book.extraction;
-  if (!ex || ex.status === "done") return { book, busy: false };
+  if (ex && ex.status === "error" && opts.retry) {
+    ex.status = "pending";
+    ex.error = undefined;
+  }
+  if (!ex || ex.status !== "pending") return { book, busy: false };
   if (book.source.type === "gutenberg" || !book.source.url) return { book, busy: false };
   const lock = await store.readJSON<{ until: string }>(P.extractLock(id));
   if (lock && new Date(lock.until).getTime() > Date.now()) return { book, busy: true };
   await store.writeJSON(P.extractLock(id), { until: new Date(Date.now() + 150_000).toISOString() });
   try {
     const from = ex.nextPage;
-    const to = Math.min(ex.totalPages, from + PDF_CHUNK_PAGES - 1);
+    let to = Math.min(ex.totalPages, from + PDF_CHUNK_PAGES - 1);
     let markdown = await extractedMarkdown(book);
     try {
       const pdf = await readSource(book.source.url, book.source.pathname);
-      const md = await extractPdfPages(pdf, from, to);
+      const { extractPdfText, repairLigatures, fixDropCaps, isHebrewText } = await import("./pdftext");
+      const localTo = Math.min(ex.totalPages, from + LOCAL_CHUNK_PAGES - 1);
+      const local = await extractPdfText(pdf, from, localTo).catch((e) => {
+        console.warn("local pdf text", id, (e as Error).message);
+        return null;
+      });
+      const textLayer = !!local && local.pages > 0 && local.chars >= local.pages * 150; // עמוד טקסט רגיל: 1,000+ תווים
+      let md: string;
+      if (local && textLayer && !isHebrewText(local.markdown)) {
+        md = await fixDropCaps(repairLigatures(local.markdown));
+        to = localTo;
+      } else {
+        try {
+          md = await extractPdfPages(pdf, from, to); // סרוק או עברית — גוגל קורא את העמודים
+        } catch (e) {
+          if (!local || !textLayer) throw e; // גוגל סירב ואין שכבת טקסט — אין מה לעשות
+          md = repairLigatures(local.markdown);
+          to = localTo;
+        }
+      }
       markdown = (markdown ? markdown + "\n\n" : "") + md;
       ex.nextPage = to + 1;
       if (ex.nextPage > ex.totalPages) ex.status = "done";

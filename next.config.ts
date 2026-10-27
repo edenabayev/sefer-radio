@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@breezystack/lamejs", "pdf-lib", "jszip", "kokoro-js", "@huggingface/transformers", "onnxruntime-node", "phonemizer"],
+  serverExternalPackages: ["@breezystack/lamejs", "pdf-lib", "jszip", "kokoro-js", "@huggingface/transformers", "onnxruntime-node", "phonemizer", "pdfjs-dist"],
   // onnxruntime מגיע עם ספריות לכל מערכת הפעלה ול-GPU (מאות MB) — לשרת צריך רק linux x64 למעבד
   outputFileTracingIncludes: {
     "/api/**": [
