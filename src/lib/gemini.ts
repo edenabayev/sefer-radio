@@ -310,6 +310,8 @@ export async function ttsChunk(part: string, voice: string, model = MODELS.tts, 
   return Buffer.concat(parts.map((p) => wavToPcm(Buffer.from(p.inlineData!.data!, "base64"))));
 }
 
+let langCodeRejected = false;
+
 /** הקראה ב-Gemini דרך צינור ההקראה: ניקוי → משפטים → חתיכות עד 3000 בייט מיושרות לפסקאות → קיצוץ שקט → הפסקות לפי גבול. */
 export async function tts(text: string, lang: string, voice = VOICE, opts: { headingFirst?: boolean } = {}): Promise<Buffer> {
   const clean = cleanForTts(text);
@@ -320,16 +322,30 @@ export async function tts(text: string, lang: string, voice = VOICE, opts: { hea
   }
   const { narrate, normalizeForSpeech } = await import("./narrate");
   const l = lang === "en" ? "en" : "he";
+  // אומרים לגוגל במפורש שזו עברית — בלי זה הקול (שנבנה קודם כל לאנגלית) מנחש, ויוצא לפעמים מבטא אמריקאי.
+  // אם גוגל לא מקבל את השדה — ממשיכים בלעדיו (עדיף הקראה עם מבטא מאשר בלי הקראה).
+  const say = async (part: string): Promise<Buffer> => {
+    if (l === "he" && !langCodeRejected) {
+      try {
+        return await ttsChunk(part, voice, MODELS.tts, "he");
+      } catch (e) {
+        if (!/INVALID_ARGUMENT|language/i.test(String((e as Error)?.message))) throw e;
+        langCodeRejected = true;
+        console.warn("TTS languageCode rejected, continuing without it:", (e as Error).message);
+      }
+    }
+    return ttsChunk(part, voice);
+  };
   const synth = async (part: string): Promise<Buffer> => {
     try {
-      return await ttsChunk(part, voice);
+      return await say(part);
     } catch (e) {
       // ניסיון שני: בלי ניקוד ובחתיכות קטנות יותר (טקסט מנוקד כבד למנוע)
       const plain = stripNiqqud(part);
       const smaller = splitForTts(plain, 1500);
       try {
         const bufs: Buffer[] = [];
-        for (const sp of smaller) bufs.push(await ttsChunk(sp, voice));
+        for (const sp of smaller) bufs.push(await say(sp));
         return Buffer.concat(bufs);
       } catch {
         throw e;

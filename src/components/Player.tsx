@@ -95,6 +95,8 @@ export default function Player({ id }: { id: string }) {
   // כל מעבר לזרם חדש מקבל מספר: מעבר חדש מבטל ישן, ובזמן מעבר מתעלמים מאירועי הזרם הישן (שממשיך להתנגן עד ההחלפה)
   const playToken = useRef(0);
   const switching = useRef(false);
+  const lastAutoRecover = useRef(0);
+  const wantPlayRef = useRef(false); // האם המאזין רוצה שזה ינגן (לא עצר בעצמו) — להתאוששות אחרי תקלה
   const interludeRef = useRef<{ kind: "recap"; resume: { section: number; offset: number } } | { kind: "question"; chapter: number } | null>(null);
   const recapToken = useRef(0); // לביטול סיכום שעוד נטען (לחיצה נוספת על ▶ או "דלג")
   const sleepRef = useRef<SleepTimer | null>(null);
@@ -611,6 +613,7 @@ export default function Player({ id }: { id: string }) {
     }
   };
   const onPlay = () => {
+    wantPlayRef.current = true;
     setPlaying(true);
     wantNext.current = null;
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
@@ -744,6 +747,7 @@ export default function Player({ id }: { id: string }) {
       a.volume = 1;
     }
     nightPending.current = true;
+    wantPlayRef.current = false;
     if (s.sid) api(`/api/books/${id}/sleep`, { method: "POST", body: JSON.stringify({ action: "fired", sid: s.sid, ...pos }) }).catch(() => {});
   }
   function checkSleep() {
@@ -967,7 +971,10 @@ export default function Player({ id }: { id: string }) {
       }
       if (pausedAt.current && Date.now() - pausedAt.current > 60_000 && !interludeRef.current) a.currentTime = Math.max(0, a.currentTime - 5);
       await a.play();
-    } else a.pause();
+    } else {
+      wantPlayRef.current = false;
+      a.pause();
+    }
   }
   function seekInSection(ratio: number) {
     const a = audioRef.current;
@@ -1166,7 +1173,19 @@ export default function Player({ id }: { id: string }) {
   }
 
   // ---- תצוגה ----
-  const audioEl = <audio ref={audioRef} preload="auto" playsInline onEnded={onEnded} onTimeUpdate={onTime} onPlay={onPlay} onPause={onPause} onLoadedMetadata={onLoaded} onError={() => setErr("הדפדפן לא הצליח לנגן את הקובץ")} />;
+  // הזרם נכשל באמצע (רשת, או שינוי בשרת שהחליף את הקבצים) — בונים זרם חדש מאותו מקום, פעם אחת בחצי דקה
+  const onAudioError = () => {
+    const a = audioRef.current;
+    const m = manifestRef.current;
+    if (a && m && !interludeRef.current && Date.now() - lastAutoRecover.current > 30_000) {
+      lastAutoRecover.current = Date.now();
+      const pos = currentPos();
+      window.setTimeout(() => playFrom(pos.section, { offset: pos.offset, autoplay: wantPlayRef.current }), 1200);
+      return;
+    }
+    setErr("הדפדפן לא הצליח לנגן את הקובץ");
+  };
+  const audioEl = <audio ref={audioRef} preload="auto" playsInline onEnded={onEnded} onTimeUpdate={onTime} onPlay={onPlay} onPause={onPause} onLoadedMetadata={onLoaded} onError={onAudioError} />;
 
   if (err && !book) {
     return (
