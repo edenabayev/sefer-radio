@@ -290,13 +290,14 @@ export function wavToPcm(buf: Buffer, targetRate = SAMPLE_RATE): Buffer {
   return out;
 }
 
-export async function ttsChunk(part: string, voice: string, model = MODELS.tts): Promise<Buffer> {
+/** languageCode — אומרים לגוגל במפורש באיזו שפה הטקסט (בלי זה הוא מנחש, ובעברית יוצא לפעמים מבטא אמריקאי). */
+export async function ttsChunk(part: string, voice: string, model = MODELS.tts, languageCode?: string): Promise<Buffer> {
   const res = await ai().models.generateContent({
     model,
     contents: part,
     config: {
       responseModalities: ["AUDIO"],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, ...(languageCode ? { languageCode } : {}) },
     },
   });
   const parts = (res.candidates?.[0]?.content?.parts ?? []).filter((p) => p.inlineData?.data);

@@ -20,6 +20,9 @@ interface Sample {
 
 const CANDIDATES: { id: string; label: string; note: string; run: (t: string) => Promise<{ pcm: Buffer; info?: string }> }[] = [
   { id: "gemini-lite-puck", label: "גוגל — Puck (מה שיש היום)", note: "gemini-3.8-flash-lite-tts · בתשלום, הזול של גוגל", run: async (t) => ({ pcm: await ttsChunk(t, "Puck", "gemini-3.8-flash-lite-tts") }) },
+  { id: "gemini-lite-puck-he", label: "גוגל — Puck + \"עברית\" מפורש", note: "אותו דגם ואותו מחיר; אומרים לגוגל שהטקסט בעברית (he)", run: async (t) => ({ pcm: await ttsChunk(t, "Puck", "gemini-3.8-flash-lite-tts", "he") }) },
+  { id: "gemini-lite-puck-heil", label: "גוגל — Puck + \"עברית (ישראל)\"", note: "כמו הקודם, בקוד he-IL", run: async (t) => ({ pcm: await ttsChunk(t, "Puck", "gemini-3.8-flash-lite-tts", "he-IL") }) },
+  { id: "gemini-lite-puck-iw", label: "גוגל — Puck + \"עברית\" (קוד ישן iw)", note: "הקוד הישן של גוגל לעברית", run: async (t) => ({ pcm: await ttsChunk(t, "Puck", "gemini-3.8-flash-lite-tts", "iw") }) },
   { id: "gemini-flash-puck", label: "גוגל — Puck, דגם מלא", note: "gemini-3.8-flash-tts · בתשלום, יקר יותר מה-lite", run: async (t) => ({ pcm: await ttsChunk(t, "Puck", "gemini-3.8-flash-tts") }) },
   { id: "gemini-31-puck", label: "גוגל — Puck, Gemini 3.1 Flash TTS", note: "מקום 1 בזירה של ivrit.ai · בתשלום", run: async (t) => ({ pcm: await ttsChunk(t, "Puck", "gemini-3.1-flash-tts-preview") }) },
   { id: "blue-daniel", label: "BlueTTS — Daniel", note: "קוד פתוח (MIT) · חינם · רץ על מחשב רגיל", run: (t) => blueTts(t, "Daniel") },
@@ -35,11 +38,12 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   if (!authorized(req)) return fail("unauthorized", 401);
   try {
-    const { text } = (await req.json()) as { text: string };
+    const { text, only } = (await req.json()) as { text: string; only?: string[] };
     if (!text?.trim()) return fail("אין טקסט", 400);
     const stamp = Date.now();
+    const chosen = only?.length ? CANDIDATES.filter((c) => only.includes(c.id)) : CANDIDATES;
     const samples: Sample[] = await Promise.all(
-      CANDIDATES.map(async (c) => {
+      chosen.map(async (c) => {
         const t0 = Date.now();
         try {
           const { pcm, info } = await c.run(text);
