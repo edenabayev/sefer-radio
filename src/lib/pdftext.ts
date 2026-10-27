@@ -239,7 +239,8 @@ export async function fixDropCaps(markdown: string): Promise<string> {
   if (!idx.length || MOCK) return markdown;
   const r = await genJson<{ prefixes: string[] }>(
     "Each line below is the opening of a book chapter whose large decorative first letter (drop cap) was lost when the text was extracted. " +
-      "For each line, return ONLY the text missing before it: usually one capital letter (\"t is said\" → \"I\"), or a one-letter word plus a space (\"long time ago\" → \"A \"). " +
+      "For each line, return ONLY the text missing before it: usually one capital letter (\"t is said\" → \"I\"), or a one-letter word plus a space (\"long time ago\" → \"A \"), " +
+      "with an opening quotation mark first if the line is the middle of a quotation (\"h Commander of the Faithful,” she said\" → \"“O\"). " +
       "Return the prefixes in the same order.\n\n" +
       idx.map((k, n) => `${n + 1}. ${paras[k].slice(0, 90)}`).join("\n"),
     "You restore lost drop caps. Answer only with the requested JSON.",
@@ -249,7 +250,7 @@ export async function fixDropCaps(markdown: string): Promise<string> {
   ).catch(() => ({ prefixes: [] as string[] }));
   idx.forEach((k, n) => {
     const pre = r.prefixes?.[n] ?? "";
-    if (/^[A-Z]( )?$/.test(pre)) paras[k] = pre + paras[k];
+    if (/^[“"‘']?[A-Z]( )?$/.test(pre)) paras[k] = pre + paras[k]; // גם עם מרכאות פותחות: "“O" + "h Commander…"
   });
   return paras.join("\n\n");
 }
