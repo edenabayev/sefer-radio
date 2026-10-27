@@ -123,13 +123,28 @@ export async function researchWithSearch(prompt: string, system?: string): Promi
 }
 
 /** תשובה במבנה JSON קבוע (סכמה). */
-export async function genJson<T>(prompt: string, system: string, schema: Record<string, unknown>, mock: T, model = MODELS.deep, onUsage?: (u: Usage) => void): Promise<T> {
+export interface JsonOpts {
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+  thinking?: "LOW" | "MEDIUM" | "HIGH";
+  fallback?: boolean; // ניסיון שני עם המודל המהיר (ברירת מחדל: כן)
+}
+
+export async function genJson<T>(prompt: string, system: string, schema: Record<string, unknown>, mock: T, model = MODELS.deep, onUsage?: (u: Usage) => void, opts: JsonOpts = {}): Promise<T> {
   if (MOCK) return mock;
   const run = async (m: string, timeout: number) => {
     const res = await ai().models.generateContent({
       model: m,
       contents: prompt,
-      config: { systemInstruction: system, maxOutputTokens: 16000, temperature: 0.3, responseMimeType: "application/json", responseJsonSchema: schema, httpOptions: { timeout } },
+      config: {
+        systemInstruction: system,
+        maxOutputTokens: opts.maxOutputTokens ?? 16000,
+        temperature: 0.3,
+        responseMimeType: "application/json",
+        responseJsonSchema: schema,
+        httpOptions: { timeout },
+        ...(opts.thinking ? { thinkingConfig: { thinkingLevel: opts.thinking as never } } : {}),
+      },
     });
     onUsage?.(usageOf(m, res));
     const text = (res.text ?? "").trim();
@@ -138,10 +153,11 @@ export async function genJson<T>(prompt: string, system: string, schema: Record<
     return JSON.parse(j[0]) as T;
   };
   try {
-    return await run(model, 150_000);
+    return await run(model, opts.timeoutMs ?? 150_000);
   } catch (e) {
     console.warn("genJson failed on", model, (e as Error).message);
-    return run(MODELS.text, 120_000);
+    if (opts.fallback === false) throw e;
+    return run(MODELS.text, opts.timeoutMs ?? 120_000);
   }
 }
 

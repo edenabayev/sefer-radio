@@ -244,10 +244,16 @@ export async function fixDropCaps(markdown: string): Promise<string> {
       "Return the prefixes in the same order.\n\n" +
       idx.map((k, n) => `${n + 1}. ${paras[k].slice(0, 90)}`).join("\n"),
     "You restore lost drop caps. Answer only with the requested JSON.",
-    { type: "object", properties: { prefixes: { type: "array", items: { type: "string" } } }, required: ["prefixes"] },
+    { type: "object", properties: { prefixes: { type: "array", items: { type: "string", maxLength: 4 }, maxItems: idx.length } }, required: ["prefixes"] },
     { prefixes: [] },
     MODELS.text,
-  ).catch(() => ({ prefixes: [] as string[] }));
+    undefined,
+    // משימה זעירה: תשובה קצרה, מעט חשיבה, ובלי לחכות דקות אם המודל נתקע (אז פשוט לא משחזרים)
+    { maxOutputTokens: 1500, timeoutMs: 40_000, thinking: "LOW", fallback: false },
+  ).catch((e) => {
+    console.warn("drop caps:", (e as Error).message);
+    return { prefixes: [] as string[] };
+  });
   idx.forEach((k, n) => {
     const pre = r.prefixes?.[n] ?? "";
     if (/^[“"‘']?[A-Z]( )?$/.test(pre)) paras[k] = pre + paras[k]; // גם עם מרכאות פותחות: "“O" + "h Commander…"
