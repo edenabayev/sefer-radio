@@ -75,7 +75,9 @@ const P = {
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
-  extracted: (id: string) => `books/${id}/extracted.md`,
+  extracted: (id: string) => `books/${id}/extracted.md`, // ישן: קובץ אחד שגדל (נקרא-ונכתב — רגיש לגרסה ישנה מה-Blob)
+  extractDir: (id: string) => `books/${id}/extract/`, // חדש: קובץ לכל צעד, בשם קבוע לפי העמודים — אף פעם לא נדרס בתוכן אחר
+  extractChunk: (id: string, from: number, to: number) => `books/${id}/extract/${String(from).padStart(5, "0")}-${String(to).padStart(5, "0")}.md`,
   extractLock: (id: string) => `books/${id}/extract.lock.json`,
   answer: (id: string, i: number, hash: string) => `books/${id}/answers/${i}/${hash}.mp3`,
 };
@@ -312,7 +314,36 @@ export async function createFromUpload(url: string, filename: string, pathname?:
 
 /** בנייה מחדש של הקטעים מקובץ המקור (אחרי שיפור בניקוי/חלוקה). שומר את המזהה; שמע ותרגום ישנים נשארים לפי מספר קטע. */
 /** הטקסט שחולץ מה-PDF עד כה (בקובץ נפרד; ספרים ישנים — בתוך book.json). */
+interface Chunk {
+  from: number;
+  to: number;
+  path: string;
+}
+
+/** הצעדים שכבר נקראו, לפי הסדר ובלי חפיפות (רשימת קבצים — תמיד טרייה, גם כשקובץ שנכתב עכשיו עוד לא "נראה" בקריאה). */
+async function readChunks(id: string): Promise<{ chunks: Chunk[]; next: number }> {
+  const dir = P.extractDir(id);
+  const all = (await store.listPaths(dir))
+    .map((p) => {
+      const m = p.slice(dir.length).match(/^(\d+)-(\d+)\.md$/);
+      return m ? { from: Number(m[1]), to: Number(m[2]), path: p } : null;
+    })
+    .filter((c): c is Chunk => !!c)
+    .sort((a, b) => a.from - b.from || b.to - a.to);
+  const chunks: Chunk[] = [];
+  let next = 1;
+  for (const c of all) {
+    if (c.from !== next) continue; // חפיפה (אותו צעד פעמיים) או חור
+    chunks.push(c);
+    next = c.to + 1;
+  }
+  return { chunks, next };
+}
+
+/** הטקסט שחולץ מה-PDF עד כה: מקבצי הצעדים; ספרים ישנים — מהקובץ האחד (או מתוך book.json). */
 async function extractedMarkdown(book: Book): Promise<string> {
+  const { chunks } = await readChunks(book.id);
+  if (chunks.length) return (await Promise.all(chunks.map((c) => store.readText(c.path)))).map((t) => (t ?? "").trim()).filter(Boolean).join("\n\n");
   if (book.extraction?.markdown) return book.extraction.markdown;
   return (await store.readText(P.extracted(book.id))) ?? "";
 }
@@ -349,14 +380,24 @@ export async function rebuildBook(id: string): Promise<Book> {
 }
 
 /** צעד חילוץ אחד (עד PDF_CHUNK_PAGES עמודים). רץ מהלקוח כשהספר פתוח וגם מה-cron ברקע; נעילה מונעת כפילות. */
+class DoneAlready extends Error {}
+
 /** קריאת PDF בצעדים. קודם מנסים לקרוא את שכבת הטקסט כאן על השרת (מהיר, חינם, 100 עמודים לצעד, ובלי סירוב של גוגל
  *  לטקסט מוגן); רק PDF סרוק (בלי טקסט) או בעברית עובר לגוגל, 25 עמודים לצעד. retry — ניסיון מחדש אחרי שגיאה. */
-export const LOCAL_CHUNK_PAGES = 100;
-export async function extractStep(id: string, opts: { retry?: boolean } = {}): Promise<{ book: Book; busy: boolean }> {
+const localChunkPages = () => Number(process.env.LOCAL_PDF_CHUNK) || 100; // בבדיקות אפשר צעדים קטנים
+export async function extractStep(id: string, opts: { retry?: boolean; restart?: boolean } = {}): Promise<{ book: Book; busy: boolean }> {
   const book = await getBook(id);
   if (!book) throw new Error("אין ספר כזה");
   const ex = book.extraction;
-  if (ex && ex.status === "error" && opts.retry) {
+  if (ex && opts.restart) {
+    // קריאה מחדש מהעמוד הראשון (למשל אחרי תיקון בקורא): מוחקים את מה שחולץ — זה תוצר שלנו, לא הקובץ של המשתמש
+    await Promise.all([...(await store.listPaths(P.extractDir(id))), P.extracted(id)].map((p) => store.remove(p)));
+    Object.assign(ex, { status: "pending", nextPage: 1, markdown: "", error: undefined });
+    book.sections = [];
+    book.chapters = [];
+    await saveBook(book);
+  }
+  if (ex && ex.status === "error" && (opts.retry || opts.restart)) {
     ex.status = "pending";
     ex.error = undefined;
   }
@@ -366,13 +407,17 @@ export async function extractStep(id: string, opts: { retry?: boolean } = {}): P
   if (lock && new Date(lock.until).getTime() > Date.now()) return { book, busy: true };
   await store.writeJSON(P.extractLock(id), { until: new Date(Date.now() + 150_000).toISOString() });
   try {
-    const from = ex.nextPage;
+    // מאיפה ממשיכים: לפי קבצי הצעדים (טרי), ולא לפי book.json (שאחרי כתיבה יכול להיקרא בגרסה ישנה — וכך צעד רץ פעמיים)
+    const done = await readChunks(id);
+    const legacy = !done.chunks.length && ex.nextPage > 1; // ספר שהתחיל להיקרא בשיטה הישנה (קובץ אחד)
+    const from = legacy ? ex.nextPage : done.next;
     let to = Math.min(ex.totalPages, from + PDF_CHUNK_PAGES - 1);
-    let markdown = await extractedMarkdown(book);
+    let markdown = legacy ? await extractedMarkdown(book) : "";
     try {
+      if (from > ex.totalPages) throw new DoneAlready();
       const pdf = await readSource(book.source.url, book.source.pathname);
       const { extractPdfText, repairLigatures, fixDropCaps, isHebrewText } = await import("./pdftext");
-      const localTo = Math.min(ex.totalPages, from + LOCAL_CHUNK_PAGES - 1);
+      const localTo = Math.min(ex.totalPages, from + localChunkPages() - 1);
       const local = await extractPdfText(pdf, from, localTo).catch((e) => {
         console.warn("local pdf text", id, (e as Error).message);
         return null;
@@ -391,16 +436,30 @@ export async function extractStep(id: string, opts: { retry?: boolean } = {}): P
           to = localTo;
         }
       }
-      markdown = (markdown ? markdown + "\n\n" : "") + md;
+      if (legacy) {
+        markdown = (markdown ? markdown + "\n\n" : "") + md;
+        if (markdown) await store.writeBytes(P.extracted(id), markdown, "text/markdown; charset=utf-8");
+      } else {
+        // קובץ לצעד הזה בלבד; אם שני תהליכים קראו את אותו צעד — אותו שם ואותו תוכן, בלי כפילות
+        await store.writeBytes(P.extractChunk(id, from, to), md || " ", "text/markdown; charset=utf-8");
+        const chunks = [...done.chunks.map((c) => c.path), P.extractChunk(id, from, to)];
+        const texts = await Promise.all(chunks.slice(0, -1).map((p) => store.readText(p)));
+        markdown = [...texts.map((t) => (t ?? "").trim()), md.trim()].filter(Boolean).join("\n\n");
+      }
       ex.nextPage = to + 1;
       if (ex.nextPage > ex.totalPages) ex.status = "done";
       ex.error = undefined;
     } catch (e) {
-      ex.status = "error";
-      ex.error = String((e as Error)?.message || e);
+      if (e instanceof DoneAlready) {
+        ex.nextPage = from;
+        ex.status = "done";
+        markdown = await extractedMarkdown(book);
+      } else {
+        ex.status = "error";
+        ex.error = String((e as Error)?.message || e);
+        if (!legacy) markdown = await extractedMarkdown(book);
+      }
     }
-    // הטקסט שחולץ נשמר בקובץ נפרד (לא בתוך book.json, שנקרא בכל בקשה) — וכך לעולם לא מחלצים את אותו PDF פעמיים
-    if (markdown) await store.writeBytes(P.extracted(id), markdown, "text/markdown; charset=utf-8"); // Blob לא מקבל קובץ ריק
     ex.markdown = "";
     // בונים מחדש את הקטעים מכל מה שחולץ עד כה — כך אפשר להתחיל להאזין לפני שהספר כולו נקרא
     const built = buildSections(markdownToParagraphs(markdown), book.title);
