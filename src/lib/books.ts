@@ -4,7 +4,7 @@ import crypto from "crypto";
 import * as store from "./storage";
 import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
-import { KOKORO_VERSION, kokoroVoice } from "./kokoro-voices";
+import { KOKORO_VERSION, KOKORO_DEFAULT, kokoroVoice } from "./kokoro-voices";
 import { pcm16ToMp3 } from "./mp3";
 import { buildSections, cleanSectionText, cleanSourceText, cleanSourceParagraphs, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
@@ -83,6 +83,7 @@ const P = {
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
+  refused: (id: string, i: number) => `books/${id}/refused/${i}.json`, // גוגל סירב לתרגם את הקטע — לא מנסים שוב כל דקה
   extracted: (id: string) => `books/${id}/extracted.md`, // ישן: קובץ אחד שגדל (נקרא-ונכתב — רגיש לגרסה ישנה מה-Blob)
   extractDir: (id: string) => `books/${id}/extract/`, // חדש: קובץ לכל צעד, בשם קבוע לפי העמודים — אף פעם לא נדרס בתוכן אחר
   extractChunk: (id: string, from: number, to: number) => `books/${id}/extract/${String(from).padStart(5, "0")}-${String(to).padStart(5, "0")}.md`,
@@ -503,6 +504,11 @@ export async function extractStep(id: string, opts: { retry?: boolean; restart?:
 
 /** תרגום קטע לעברית — לפי כרטיס התרגום של הספר (אם אין — חוקרים קודם; אם המחקר לא אפשרי עכשיו — בלי כרטיס).
  *  נשמר פעם אחת לכל דור. עם save:false — דוגמה שלא נשמרת (לבדיקת הכרטיס). */
+/** גוגל מסרב לתרגם את הקטע (תוכן חסום / תשובה ריקה). נרשם, ולא מנסים שוב לפני שעבר יום. */
+export class TranslationRefused extends Error {}
+const REFUSAL_RETRY_MS = 24 * 3600 * 1000;
+const isRefusal = (msg: string) => /PROHIBITED_CONTENT|SAFETY|BLOCKLIST|RECITATION|SPII|תשובה ריקה/i.test(msg);
+
 // תרגום שכבר רץ באותו תהליך (למשל הכנה מראש של הקטע הבא) — מחכים לו במקום לתרגם פעמיים.
 // נרשם מיד בקריאה (לפני בדיקת הקובץ), כדי ששתי קריאות צמודות לא יתרגמו שתיהן.
 const trInFlight = new Map<string, Promise<string>>();
@@ -526,7 +532,17 @@ export async function ensureTranslation(book: Book, i: number, opts: { save?: bo
   const run = (async () => {
     const cached = await store.readText(key);
     if (cached) return cached;
-    const he = await translate();
+    const refused = await store.readJSON<{ at: string; reason: string }>(P.refused(book.id, i));
+    if (refused && Date.now() - new Date(refused.at).getTime() < REFUSAL_RETRY_MS) throw new TranslationRefused(refused.reason);
+    let he: string;
+    try {
+      he = await translate();
+    } catch (e) {
+      const msg = (e as Error).message || "";
+      if (!isRefusal(msg)) throw e;
+      await store.writeJSON(P.refused(book.id, i), { at: new Date().toISOString(), reason: msg }).catch(() => {});
+      throw new TranslationRefused(msg);
+    }
     await store.writeBytes(key, he, "text/plain; charset=utf-8");
     return he;
   })();
@@ -544,6 +560,14 @@ export function prefetchSpokenText(book: Book, i: number): void {
     const text = await ensureTranslation(book, i);
     await (await import("./niqqud")).withNiqqud(niqqudPath(book, i), text, `${book.id}#${i}`);
   })().catch((e) => console.warn("prefetch", book.id, i, (e as Error).message));
+}
+
+/** קטע שגוגל סירב לתרגם: משפט קצר בעברית, ואז הקטע במקור באנגלית (Kokoro) — כדי שההאזנה לא תיעצר ולא ידלג תוכן. */
+async function refusedSectionPcm(englishText: string, heVoice: string): Promise<Buffer> {
+  const note = await tts("את הקטע הבא גוגל סירב לתרגם, אז הוא מוקרא במקור, באנגלית.", "he", heVoice);
+  const { pcm } = await (await import("./kokoro")).kokoroTts(englishText, KOKORO_DEFAULT);
+  const gap = Buffer.alloc(Math.round(SAMPLE_RATE * 0.8) * 2);
+  return Buffer.concat([note, gap, pcm, gap]);
 }
 
 /** מה שהמודל מוסיף לפעמים מסביב לתרגום: "הנה התרגום:", מרכאות קוד, תגיות ההקשר. */
@@ -569,7 +593,17 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
   if (!sec) throw new Error("אין קטע " + i);
   const effLang = lang === "he" ? "he" : book.lang === "he" ? "he" : "en";
   // במקור: בלי כותרות רצות ובלי שבירת פסקה באמצע משפט (רק לשמע חדש; קבצים קיימים לא משתנים)
-  const text = lang === "he" ? await ensureTranslation(book, i) : effLang === "en" ? cleanSectionText(book, i) : sec.text;
+  let text: string;
+  let refusedEn = false; // גוגל סירב לתרגם — מקריאים את הקטע במקור (אנגלית), אחרי משפט הסבר קצר בעברית
+  if (lang === "he") {
+    try {
+      text = await ensureTranslation(book, i);
+    } catch (e) {
+      if (!(e instanceof TranslationRefused) || book.lang !== "en") throw e;
+      refusedEn = true;
+      text = cleanSectionText(book, i);
+    }
+  } else text = effLang === "en" ? cleanSectionText(book, i) : sec.text;
   if (effLang === "en") voice = kokoroVoice(voice);
   const p = P.audio(book, i, effLang, voice);
   const url = await store.exists(p);
@@ -582,7 +616,11 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
   const body = effLang === "he" ? await (await import("./niqqud")).withNiqqud(niqqudPath(book, i), text, `${book.id}#${i}`) : text;
   const spoken = heading ? heading + "\n\n" + body : body;
   // אנגלית: Kokoro (קוד פתוח, רץ כאן על המעבד, בלי עלות לפי תו). עברית: Gemini.
-  const pcm = effLang === "en" ? (await (await import("./kokoro")).kokoroTts(spoken, voice, { headingFirst: !!heading })).pcm : await tts(spoken, effLang, voice, { headingFirst: !!heading });
+  const pcm = refusedEn
+    ? await refusedSectionPcm(text, voice)
+    : effLang === "en"
+      ? (await (await import("./kokoro")).kokoroTts(spoken, voice, { headingFirst: !!heading })).pcm
+      : await tts(spoken, effLang, voice, { headingFirst: !!heading });
   const mp3 = await pcm16ToMp3(pcm, SAMPLE_RATE);
   const newUrl = await store.writeBytes(p, mp3, "audio/mpeg");
   return { url: newUrl, text, lang: effLang, cached: false };
