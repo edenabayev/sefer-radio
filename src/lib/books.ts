@@ -37,6 +37,9 @@ export interface Book {
   /** ניקוד (לא נשמר ב-book.json — נקרא מקובץ סימון): מהקטע הזה והלאה השמע העברי מוקלט מחדש עם ניקוד,
    *  בתיקייה נפרדת (v3n), כדי לא לדרוס שמע שאולי מתנגן עכשיו. בלי סימון — הכול בתיקייה הרגילה. */
   nqFrom?: number;
+  /** קטעים שהוקלטו מחדש בודדים (קטע → זמן ההקלטה), מקבצי סימון — למשל קטע שגוגל סירב לתרגם ותורגם אחר כך בגיבוי.
+   *  כל הקלטה בשם חדש, כך שזרם שכבר מתנגן ממשיך עם הקבצים הישנים. */
+  fixes?: Record<number, number>;
 }
 
 export interface BookMeta {
@@ -72,6 +75,8 @@ export const heMapPath = (book: Pick<Book, "id" | "lang" | "trGen">) => `books/$
 /** תיקיית השמע העברי. nq = ההקלטה מחדש עם ניקוד (לקטעים מ-book.nqFrom והלאה). */
 export const heAudioDir = (book: Pick<Book, "id" | "lang" | "trGen">, voice: string, nq = false) => `books/${book.id}/audio/he/${voice}-${TTS_VERSION}${nq ? "n" : ""}${trSuffix(book)}/`;
 export const usesNq = (book: Pick<Book, "nqFrom">, i: number) => book.nqFrom != null && i >= book.nqFrom;
+/** הקלטה מחדש של קטע בודד: קובץ בשם ייחודי בתיקייה נפרדת. */
+export const heFixDir = (book: Pick<Book, "id" | "lang" | "trGen">, voice: string) => `books/${book.id}/audio/he/${voice}-${TTS_VERSION}f${trSuffix(book)}/`;
 /** הטקסט המנוקד שהולך לקול (לפי דור התרגום). מחוץ לתיקיית התרגומים — כדי שלא ייספר כתרגום. */
 export const niqqudPath = (book: Pick<Book, "id" | "lang" | "trGen">, i: number) => `books/${book.id}/nq${trSuffix(book)}/${i}.txt`;
 
@@ -79,11 +84,16 @@ const P = {
   book: (id: string) => `books/${id}/book.json`,
   trGen: (id: string) => `books/${id}/trgen/`,
   audio: (book: Book, i: number, lang: string, voice: string) =>
-    lang === "en" ? `books/${book.id}/audio/en/${voice}-${KOKORO_VERSION}/${i}.mp3` : `${heAudioDir(book, voice, usesNq(book, i))}${i}.mp3`,
+    lang === "en"
+      ? `books/${book.id}/audio/en/${voice}-${KOKORO_VERSION}/${i}.mp3`
+      : book.fixes?.[i]
+        ? `${heFixDir(book, voice)}${i}-${book.fixes[i]}.mp3`
+        : `${heAudioDir(book, voice, usesNq(book, i))}${i}.mp3`,
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
   refused: (id: string, i: number) => `books/${id}/refused/${i}.json`, // גוגל סירב לתרגם את הקטע — לא מנסים שוב כל דקה
+  trFallback: (id: string, i: number) => `books/${id}/tr-fallback/${i}.json`, // הקטע תורגם ב-Google Translate (גיבוי)
   extracted: (id: string) => `books/${id}/extracted.md`, // ישן: קובץ אחד שגדל (נקרא-ונכתב — רגיש לגרסה ישנה מה-Blob)
   extractDir: (id: string) => `books/${id}/extract/`, // חדש: קובץ לכל צעד, בשם קבוע לפי העמודים — אף פעם לא נדרס בתוכן אחר
   extractChunk: (id: string, from: number, to: number) => `books/${id}/extract/${String(from).padStart(5, "0")}-${String(to).padStart(5, "0")}.md`,
@@ -131,28 +141,41 @@ export async function getBook(id: string): Promise<Book | null> {
   if (b) {
     delete b.trGen;
     delete b.nqFrom;
+    delete b.fixes;
     if (b.lang !== "he") b.trGen = marks.trGen;
     if (marks.nqFrom != null) b.nqFrom = marks.nqFrom;
+    if (marks.fixes) b.fixes = marks.fixes;
   }
   return b;
 }
 
 export async function saveBook(b: Book) {
-  const { trGen: _gen, nqFrom: _nq, ...rest } = b;
+  const { trGen: _gen, nqFrom: _nq, fixes: _fx, ...rest } = b;
   void _gen;
   void _nq;
+  void _fx;
   await store.writeJSON(P.book(b.id), rest);
 }
 
 /** קבצי הסימון של הספר (שמות ייחודיים — רשימת קבצים תמיד טרייה, בלי גרסה ישנה מה-Blob):
  *  `<זמן>.json` = דור תרגום; `nq-<זמן>-<קטע>.json` = ניקוד מהקטע הזה והלאה. האחרון קובע. */
-async function readMarkers(id: string): Promise<{ trGen?: string; nqFrom?: number }> {
+async function readMarkers(id: string): Promise<{ trGen?: string; nqFrom?: number; fixes?: Record<number, number> }> {
   const dir = P.trGen(id);
   const names = (await store.listPaths(dir)).map((p) => p.slice(dir.length));
   const gens = names.map((n) => n.match(/^(\d+)\.json$/)?.[1]).filter((x): x is string => !!x);
   const nqs = names.map((n) => n.match(/^nq-(\d+)-(\d+)\.json$/)).filter((m): m is RegExpMatchArray => !!m);
   nqs.sort((a, b) => Number(b[1]) - Number(a[1]));
-  return { trGen: gens.sort((a, b) => Number(b) - Number(a))[0], nqFrom: nqs[0] ? Number(nqs[0][2]) : undefined };
+  // fx-<זמן>-<קטע>.json = הקטע הוקלט מחדש (האחרון לכל קטע קובע)
+  let fixes: Record<number, number> | undefined;
+  for (const n of names) {
+    const m = n.match(/^fx-(\d+)-(\d+)\.json$/);
+    if (!m) continue;
+    fixes ??= {};
+    const ts = Number(m[1]);
+    const i = Number(m[2]);
+    if (!fixes[i] || ts > fixes[i]) fixes[i] = ts;
+  }
+  return { trGen: gens.sort((a, b) => Number(b) - Number(a))[0], nqFrom: nqs[0] ? Number(nqs[0][2]) : undefined, fixes };
 }
 
 /** הדור הנוכחי של התרגום. */
@@ -529,11 +552,29 @@ export async function ensureTranslation(book: Book, i: number, opts: { save?: bo
   if (!save) return translate();
   const running = trInFlight.get(key);
   if (running) return running;
+  // גוגל (Gemini) סירב: לא מתווכחים — עוברים מיד ל-Google Translate. אם גם הוא נכשל — הקטע יוקרא במקור.
+  const fallback = async (reason: string): Promise<string> => {
+    try {
+      const paras = cleanSectionText(book, i)
+        .split(/\n\s*\n/)
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const he = (await (await import("./gtranslate")).googleTranslate(paras, "he", book.lang === "en" ? "en" : undefined)).join("\n\n");
+      if (!/[\u05D0-\u05EA]/.test(he)) throw new Error("התרגום לא בעברית");
+      await store.writeBytes(key, he, "text/plain; charset=utf-8");
+      await store.writeJSON(P.trFallback(book.id, i), { at: new Date().toISOString(), engine: "google-translate", reason }).catch(() => {});
+      console.log(`translation fallback ${book.id}#${i}: Google Translate`);
+      return he;
+    } catch (e2) {
+      console.warn(`translation fallback ${book.id}#${i} failed:`, (e2 as Error).message);
+      throw new TranslationRefused(reason);
+    }
+  };
   const run = (async () => {
     const cached = await store.readText(key);
     if (cached) return cached;
     const refused = await store.readJSON<{ at: string; reason: string }>(P.refused(book.id, i));
-    if (refused && Date.now() - new Date(refused.at).getTime() < REFUSAL_RETRY_MS) throw new TranslationRefused(refused.reason);
+    if (refused && Date.now() - new Date(refused.at).getTime() < REFUSAL_RETRY_MS) return fallback(refused.reason);
     let he: string;
     try {
       he = await translate();
@@ -541,7 +582,7 @@ export async function ensureTranslation(book: Book, i: number, opts: { save?: bo
       const msg = (e as Error).message || "";
       if (!isRefusal(msg)) throw e;
       await store.writeJSON(P.refused(book.id, i), { at: new Date().toISOString(), reason: msg }).catch(() => {});
-      throw new TranslationRefused(msg);
+      return fallback(msg);
     }
     await store.writeBytes(key, he, "text/plain; charset=utf-8");
     return he;
@@ -563,11 +604,24 @@ export function prefetchSpokenText(book: Book, i: number): Promise<void> {
 }
 
 /** קטע שגוגל סירב לתרגם: משפט קצר בעברית, ואז הקטע במקור באנגלית (Kokoro) — כדי שההאזנה לא תיעצר ולא ידלג תוכן. */
-async function refusedSectionPcm(englishText: string, heVoice: string): Promise<Buffer> {
-  const note = await tts("את הקטע הבא גוגל סירב לתרגם, אז הוא מוקרא במקור, באנגלית.", "he", heVoice);
+async function refusedSectionPcm(englishText: string, heVoice: string, why: "translate" | "read" = "translate"): Promise<Buffer> {
+  const note = await tts(why === "translate" ? "את הקטע הבא גוגל סירב לתרגם, אז הוא מוקרא במקור, באנגלית." : "את הקטע הבא גוגל סירב להקריא בעברית, אז הוא מוקרא במקור, באנגלית.", "he", heVoice);
   const { pcm } = await (await import("./kokoro")).kokoroTts(englishText, KOKORO_DEFAULT);
   const gap = Buffer.alloc(Math.round(SAMPLE_RATE * 0.8) * 2);
   return Buffer.concat([note, gap, pcm, gap]);
+}
+
+/** הקלטה מחדש של קטע בודד (למשל אחרי שתורגם בגיבוי): קובץ חדש בשם ייחודי, ורק אחריו סימון —
+ *  זרם שכבר מתנגן לא משתנה, וזרם חדש מקבל את ההקלטה החדשה. */
+export async function rerecordSection(book: Book, i: number, voice = VOICE): Promise<{ section: number; url: string; seconds: number; hebrew: boolean }> {
+  if (!book.sections[i]) throw new Error("אין קטע " + i);
+  const he = await ensureTranslation(book, i); // אם התרגום נכשל לגמרי — זורק, ולא מקליטים שוב סתם
+  const ts = Date.now();
+  const copy: Book = { ...book, fixes: { ...(book.fixes ?? {}), [i]: ts } };
+  const r = await ensureAudio(copy, i, "he", voice);
+  await store.writeJSON(`${P.trGen(book.id)}fx-${ts}-${i}.json`, { at: new Date(ts).toISOString(), section: i, voice });
+  const size = (await store.listFiles(heFixDir(book, voice))).find((f) => f.path.endsWith(`/${i}-${ts}.mp3`))?.size ?? 0;
+  return { section: i, url: r.url, seconds: Math.round(size / 6000), hebrew: /[\u05D0-\u05EA]/.test(he) };
 }
 
 /** מה שהמודל מוסיף לפעמים מסביב לתרגום: "הנה התרגום:", מרכאות קוד, תגיות ההקשר. */
@@ -620,7 +674,12 @@ export async function ensureAudio(book: Book, i: number, lang: "he" | "orig", vo
     ? await refusedSectionPcm(text, voice)
     : effLang === "en"
       ? (await (await import("./kokoro")).kokoroTts(spoken, voice, { headingFirst: !!heading })).pcm
-      : await tts(spoken, effLang, voice, { headingFirst: !!heading });
+      : await tts(spoken, effLang, voice, { headingFirst: !!heading }).catch(async (e) => {
+          // הקול של גוגל סירב להקריא את העברית — בספר באנגלית: במקור, אחרי משפט הסבר (לא נתקעים)
+          if (book.lang !== "en" || !/מסרב|PROHIBITED|SAFETY|BLOCK|OTHER|לא החזיר שמע/i.test(String((e as Error)?.message))) throw e;
+          console.warn(`tts refused ${book.id}#${i}, reading the original:`, (e as Error).message);
+          return refusedSectionPcm(cleanSectionText(book, i), voice, "read");
+        });
   const mp3 = await pcm16ToMp3(pcm, SAMPLE_RATE);
   const newUrl = await store.writeBytes(p, mp3, "audio/mpeg");
   return { url: newUrl, text, lang: effLang, cached: false };

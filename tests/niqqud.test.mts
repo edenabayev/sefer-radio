@@ -34,6 +34,8 @@ assert.ok(parts.every((p) => p.length <= 1000));
 
 // "gen" בכתובת הזרם: דור תרגום + ניקוד
 assert.deepEqual(parseGen(""), { trGen: undefined, nqFrom: undefined });
+assert.deepEqual(parseGen("~n53~f1761650000000"), { trGen: undefined, nqFrom: 53, fixUpTo: 1761650000000 });
+assert.equal(encodeGen({ lang: "en", trGen: undefined, nqFrom: 53, fixes: { 62: 100, 80: 200 } }), "~n53~f200");
 assert.deepEqual(parseGen("~n49"), { trGen: undefined, nqFrom: 49 });
 assert.deepEqual(parseGen("1730000000000~n7"), { trGen: "1730000000000", nqFrom: 7 });
 assert.deepEqual(parseGen("1730000000000"), { trGen: "1730000000000", nqFrom: undefined });

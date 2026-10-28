@@ -29,21 +29,30 @@ export interface Manifest {
   totalBytes: number;
 }
 
-/** "gen" בכתובת הזרם: דור התרגום + סימון הניקוד. הלקוח מעביר אותו כמו שהוא — כך זרם ישן (בלי "~n")
- *  ממשיך לקבל בדיוק את הקבצים הישנים, וזרם חדש מקבל את המנוקדים. */
-export function encodeGen(book: Pick<Book, "lang" | "trGen" | "nqFrom">): string | undefined {
-  const g = (book.lang !== "he" && book.trGen ? book.trGen : "") + (book.nqFrom != null ? `~n${book.nqFrom}` : "");
+/** "gen" בכתובת הזרם: דור התרגום, סימון הניקוד ("~n<קטע>") והקלטות מחדש של קטעים בודדים ("~f<זמן>").
+ *  הלקוח מעביר אותו כמו שהוא — כך זרם ישן ממשיך לקבל בדיוק את הקבצים הישנים, וזרם חדש את החדשים. */
+export function encodeGen(book: Pick<Book, "lang" | "trGen" | "nqFrom" | "fixes">): string | undefined {
+  const fx = Object.values(book.fixes ?? {});
+  const g = (book.lang !== "he" && book.trGen ? book.trGen : "") + (book.nqFrom != null ? `~n${book.nqFrom}` : "") + (fx.length ? `~f${Math.max(...fx)}` : "");
   return g || undefined;
 }
-export function parseGen(g: string | null | undefined): { trGen?: string; nqFrom?: number } {
-  const [tr, nq] = (g || "").split("~n");
-  return { trGen: tr || undefined, nqFrom: nq != null && /^\d+$/.test(nq) ? Number(nq) : undefined };
+export function parseGen(g: string | null | undefined): { trGen?: string; nqFrom?: number; fixUpTo?: number } {
+  const [tr, ...rest] = (g || "").split("~");
+  const out: { trGen?: string; nqFrom?: number; fixUpTo?: number } = { trGen: tr || undefined, nqFrom: undefined };
+  for (const part of rest) {
+    const m = part.match(/^([nf])(\d+)$/);
+    if (m?.[1] === "n") out.nqFrom = Number(m[2]);
+    if (m?.[1] === "f") out.fixUpTo = Number(m[2]);
+  }
+  return out;
 }
 /** מחילים על הספר את מה שכתוב בכתובת (בשביל זרם יציב). */
 export function applyGen(book: Book, g: string | null | undefined) {
   const p = parseGen(g);
   if (book.lang !== "he") book.trGen = p.trGen;
   book.nqFrom = p.nqFrom;
+  const fx = Object.entries(book.fixes ?? {}).filter(([, ts]) => p.fixUpTo != null && ts <= p.fixUpTo);
+  book.fixes = fx.length ? Object.fromEntries(fx.map(([i, ts]) => [Number(i), ts])) : undefined;
 }
 
 async function files(book: Book, voice: string, lang: "he" | "en") {

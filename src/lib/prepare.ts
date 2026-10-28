@@ -1,7 +1,7 @@
 // הכנה מראש: מייצרים שמע לקטעים מהמקום הנוכחי ועד סוף הפרק השני הבא, בסדר ההאזנה.
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
-import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heMapPath, heTextPath, prefetchSpokenText, trSuffix, type Book } from "./books";
+import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heFixDir, heMapPath, heTextPath, prefetchSpokenText, trSuffix, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { KOKORO_VERSION, KOKORO_DEFAULT, isKokoroVoice } from "./kokoro-voices";
@@ -45,6 +45,16 @@ export async function audioFilesFor(book: Book, voice: string, lang: "he" | "en"
       out.set(i, f);
     }
   });
+  // קטעים שהוקלטו מחדש בודדים (רק אלה שהזרם הזה מכיר — ראו applyGen)
+  const fixes = lang === "he" ? Object.entries(book.fixes ?? {}) : [];
+  if (fixes.length) {
+    const dir = heFixDir(book, voice);
+    const byName = new Map((await store.listFiles(dir)).map((f) => [f.path.slice(dir.length), f]));
+    for (const [i, ts] of fixes) {
+      const f = byName.get(`${i}-${ts}.mp3`);
+      if (f) out.set(Number(i), f);
+    }
+  }
   return out;
 }
 
