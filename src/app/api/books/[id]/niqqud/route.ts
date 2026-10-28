@@ -6,7 +6,7 @@ import { getBook, getProgress, setNqFrom } from "@/lib/books";
 import { prepare } from "@/lib/prepare";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 800; // ההכנה שמתחילה כאן רצה עד ~4.5 דקות ועוד קטע אחרון — שלא תיקטע באמצע עם נעילה תקועה
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   if (!authorized(req)) return fail("unauthorized", 401);
