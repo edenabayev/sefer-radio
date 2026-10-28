@@ -2,7 +2,7 @@
 // בלי "סוף שיר" כל שתי דקות (הרגע שבו אנדרואיד מקפיא את הדף כשהמסך כבוי).
 // ה-MP3 בקצב קבוע (48kbps) ולכן משך = גודל / 6000, וזה מה שמאפשר למפות זמן ↔ קטע ולהגיש Range.
 import * as store from "./storage";
-import type { Book } from "./books";
+import type { Book, NqSeg } from "./books";
 import { audioFilesFor, questionDirFor } from "./prepare";
 
 export const BYTES_PER_SEC = 6000; // 48kbps CBR
@@ -29,28 +29,31 @@ export interface Manifest {
   totalBytes: number;
 }
 
-/** "gen" בכתובת הזרם: דור התרגום, סימון הניקוד ("~n<קטע>") והקלטות מחדש של קטעים בודדים ("~f<זמן>").
- *  הלקוח מעביר אותו כמו שהוא — כך זרם ישן ממשיך לקבל בדיוק את הקבצים הישנים, וזרם חדש את החדשים. */
-export function encodeGen(book: Pick<Book, "lang" | "trGen" | "nqFrom" | "fixes">): string | undefined {
+/** "gen" בכתובת הזרם: דור התרגום, ההקלטות מחדש עם ניקוד ("~n<קטע>" או "~n<קטע>.<תג>") והקלטות מחדש של קטעים
+ *  בודדים ("~f<זמן>"). הלקוח מעביר אותו כמו שהוא — כך זרם ישן ממשיך לקבל בדיוק את הקבצים הישנים, וזרם חדש את החדשים. */
+export function encodeGen(book: Pick<Book, "lang" | "trGen" | "nqSegs" | "fixes">): string | undefined {
   const fx = Object.values(book.fixes ?? {});
-  const g = (book.lang !== "he" && book.trGen ? book.trGen : "") + (book.nqFrom != null ? `~n${book.nqFrom}` : "") + (fx.length ? `~f${Math.max(...fx)}` : "");
+  const nq = (book.nqSegs ?? []).map((s) => (s.tag === "n" ? `~n${s.from}` : `~n${s.from}.${s.tag}`)).join("");
+  const g = (book.lang !== "he" && book.trGen ? book.trGen : "") + nq + (fx.length ? `~f${Math.max(...fx)}` : "");
   return g || undefined;
 }
-export function parseGen(g: string | null | undefined): { trGen?: string; nqFrom?: number; fixUpTo?: number } {
+export function parseGen(g: string | null | undefined): { trGen?: string; nqSegs?: NqSeg[]; fixUpTo?: number } {
   const [tr, ...rest] = (g || "").split("~");
-  const out: { trGen?: string; nqFrom?: number; fixUpTo?: number } = { trGen: tr || undefined, nqFrom: undefined };
+  const out: { trGen?: string; nqSegs?: NqSeg[]; fixUpTo?: number } = { trGen: tr || undefined };
   for (const part of rest) {
-    const m = part.match(/^([nf])(\d+)$/);
-    if (m?.[1] === "n") out.nqFrom = Number(m[2]);
-    if (m?.[1] === "f") out.fixUpTo = Number(m[2]);
+    const n = part.match(/^n(\d+)(?:\.([a-z0-9]+))?$/);
+    if (n) (out.nqSegs ??= []).push({ from: Number(n[1]), tag: n[2] || "n" });
+    const f = part.match(/^f(\d+)$/);
+    if (f) out.fixUpTo = Number(f[1]);
   }
+  out.nqSegs?.sort((a, b) => a.from - b.from);
   return out;
 }
 /** מחילים על הספר את מה שכתוב בכתובת (בשביל זרם יציב). */
 export function applyGen(book: Book, g: string | null | undefined) {
   const p = parseGen(g);
   if (book.lang !== "he") book.trGen = p.trGen;
-  book.nqFrom = p.nqFrom;
+  book.nqSegs = p.nqSegs;
   const fx = Object.entries(book.fixes ?? {}).filter(([, ts]) => p.fixUpTo != null && ts <= p.fixUpTo);
   book.fixes = fx.length ? Object.fromEntries(fx.map(([i, ts]) => [Number(i), ts])) : undefined;
 }

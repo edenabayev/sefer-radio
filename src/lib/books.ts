@@ -5,6 +5,7 @@ import * as store from "./storage";
 import { fetchWithMirrors, loadCatalog, searchCatalog, GUT_UA } from "./catalog";
 import { genText, tts, extractPdfPages, pdfPageCount, PDF_CHUNK_PAGES, VOICE, SAMPLE_RATE, askWithAudio, TTS_VERSION } from "./gemini";
 import { KOKORO_VERSION, KOKORO_DEFAULT, kokoroVoice } from "./kokoro-voices";
+import { NIQQUD_VERSION, NIQQUD_TAG } from "./niqqud-version";
 import { pcm16ToMp3 } from "./mp3";
 import { buildSections, cleanSectionText, cleanSourceText, cleanSourceParagraphs, detectLang, epubToParagraphs, markdownToParagraphs, stripGutenberg, toParagraphs, type Chapter, type Section, type Lang } from "./text";
 
@@ -34,12 +35,18 @@ export interface Book {
   /** דור התרגום (לא נשמר ב-book.json — נקרא מקבצי סימון). "תרגם מחדש לפי הכרטיס" פותח דור חדש:
    *  תרגומים ושמע עברי בנתיבים חדשים, והישנים נשארים בצד. בלי דור — הנתיבים המקוריים. */
   trGen?: string;
-  /** ניקוד (לא נשמר ב-book.json — נקרא מקובץ סימון): מהקטע הזה והלאה השמע העברי מוקלט מחדש עם ניקוד,
-   *  בתיקייה נפרדת (v3n), כדי לא לדרוס שמע שאולי מתנגן עכשיו. בלי סימון — הכול בתיקייה הרגילה. */
-  nqFrom?: number;
+  /** הקלטה מחדש עם ניקוד (לא נשמר ב-book.json — נקרא מקבצי סימון): כל קטע (from) מתחיל תיקייה משלו (tag),
+   *  עד הקטע הבא. "n" = ניקוד חלקי (28.10 בבוקר, תיקיית v3n), "n2" = ניקוד מלא (28.10 בערב, v3n2).
+   *  כך לא דורסים שמע שאולי מתנגן עכשיו. בלי סימון — הכול בתיקייה הרגילה. */
+  nqSegs?: NqSeg[];
   /** קטעים שהוקלטו מחדש בודדים (קטע → זמן ההקלטה), מקבצי סימון — למשל קטע שגוגל סירב לתרגם ותורגם אחר כך בגיבוי.
    *  כל הקלטה בשם חדש, כך שזרם שכבר מתנגן ממשיך עם הקבצים הישנים. */
   fixes?: Record<number, number>;
+}
+
+export interface NqSeg {
+  from: number;
+  tag: string;
 }
 
 export interface BookMeta {
@@ -72,13 +79,18 @@ export const trSuffix = (book: Pick<Book, "lang" | "trGen">) => (book.trGen && b
 export const heDir = (book: Pick<Book, "id" | "lang" | "trGen">) => `books/${book.id}/he${book.trGen && book.lang !== "he" ? "-" + book.trGen : ""}/`;
 export const heTextPath = (book: Pick<Book, "id" | "lang" | "trGen">, i: number) => `${heDir(book)}${i}.txt`;
 export const heMapPath = (book: Pick<Book, "id" | "lang" | "trGen">) => `books/${book.id}/he${book.trGen && book.lang !== "he" ? "-" + book.trGen : ""}.json`;
-/** תיקיית השמע העברי. nq = ההקלטה מחדש עם ניקוד (לקטעים מ-book.nqFrom והלאה). */
-export const heAudioDir = (book: Pick<Book, "id" | "lang" | "trGen">, voice: string, nq = false) => `books/${book.id}/audio/he/${voice}-${TTS_VERSION}${nq ? "n" : ""}${trSuffix(book)}/`;
-export const usesNq = (book: Pick<Book, "nqFrom">, i: number) => book.nqFrom != null && i >= book.nqFrom;
+/** תיקיית השמע העברי. tag = הקלטה מחדש עם ניקוד ("n", "n2"…), לפי הקטע (nqTagFor). */
+export const heAudioDir = (book: Pick<Book, "id" | "lang" | "trGen">, voice: string, tag?: string) => `books/${book.id}/audio/he/${voice}-${TTS_VERSION}${tag ?? ""}${trSuffix(book)}/`;
+/** לאיזו הקלטה מחדש שייך הקטע: הסימון עם ה-from הגדול ביותר שלא אחרי הקטע. */
+export function nqTagFor(book: Pick<Book, "nqSegs">, i: number): string | undefined {
+  let tag: string | undefined;
+  for (const s of book.nqSegs ?? []) if (s.from <= i) tag = s.tag;
+  return tag;
+}
 /** הקלטה מחדש של קטע בודד: קובץ בשם ייחודי בתיקייה נפרדת. */
 export const heFixDir = (book: Pick<Book, "id" | "lang" | "trGen">, voice: string) => `books/${book.id}/audio/he/${voice}-${TTS_VERSION}f${trSuffix(book)}/`;
 /** הטקסט המנוקד שהולך לקול (לפי דור התרגום). מחוץ לתיקיית התרגומים — כדי שלא ייספר כתרגום. */
-export const niqqudPath = (book: Pick<Book, "id" | "lang" | "trGen">, i: number) => `books/${book.id}/nq${trSuffix(book)}/${i}.txt`;
+export const niqqudPath = (book: Pick<Book, "id" | "lang" | "trGen">, i: number) => `books/${book.id}/nq${NIQQUD_VERSION > 1 ? NIQQUD_VERSION : ""}${trSuffix(book)}/${i}.txt`;
 
 const P = {
   book: (id: string) => `books/${id}/book.json`,
@@ -88,7 +100,7 @@ const P = {
       ? `books/${book.id}/audio/en/${voice}-${KOKORO_VERSION}/${i}.mp3`
       : book.fixes?.[i]
         ? `${heFixDir(book, voice)}${i}-${book.fixes[i]}.mp3`
-        : `${heAudioDir(book, voice, usesNq(book, i))}${i}.mp3`,
+        : `${heAudioDir(book, voice, nqTagFor(book, i))}${i}.mp3`,
   explain: (id: string, i: number) => `books/${id}/explain/${i}.txt`,
   explainAudio: (id: string, i: number, voice: string) => `books/${id}/explain/${voice}-${TTS_VERSION}/${i}.mp3`,
   progress: (id: string) => `books/${id}/progress.json`,
@@ -140,17 +152,17 @@ export async function getBook(id: string): Promise<Book | null> {
   const [b, marks] = await Promise.all([store.readJSON<Book>(P.book(id)), readMarkers(id)]);
   if (b) {
     delete b.trGen;
-    delete b.nqFrom;
+    delete b.nqSegs;
     delete b.fixes;
     if (b.lang !== "he") b.trGen = marks.trGen;
-    if (marks.nqFrom != null) b.nqFrom = marks.nqFrom;
+    if (marks.nqSegs) b.nqSegs = marks.nqSegs;
     if (marks.fixes) b.fixes = marks.fixes;
   }
   return b;
 }
 
 export async function saveBook(b: Book) {
-  const { trGen: _gen, nqFrom: _nq, fixes: _fx, ...rest } = b;
+  const { trGen: _gen, nqSegs: _nq, fixes: _fx, ...rest } = b;
   void _gen;
   void _nq;
   void _fx;
@@ -159,12 +171,21 @@ export async function saveBook(b: Book) {
 
 /** קבצי הסימון של הספר (שמות ייחודיים — רשימת קבצים תמיד טרייה, בלי גרסה ישנה מה-Blob):
  *  `<זמן>.json` = דור תרגום; `nq-<זמן>-<קטע>.json` = ניקוד מהקטע הזה והלאה. האחרון קובע. */
-async function readMarkers(id: string): Promise<{ trGen?: string; nqFrom?: number; fixes?: Record<number, number> }> {
+async function readMarkers(id: string): Promise<{ trGen?: string; nqSegs?: NqSeg[]; fixes?: Record<number, number> }> {
   const dir = P.trGen(id);
   const names = (await store.listPaths(dir)).map((p) => p.slice(dir.length));
   const gens = names.map((n) => n.match(/^(\d+)\.json$/)?.[1]).filter((x): x is string => !!x);
-  const nqs = names.map((n) => n.match(/^nq-(\d+)-(\d+)\.json$/)).filter((m): m is RegExpMatchArray => !!m);
-  nqs.sort((a, b) => Number(b[1]) - Number(a[1]));
+  // nq-<זמן>-<קטע>.json = ניקוד חלקי מהקטע הזה ("n"); nq-<זמן>-<קטע>-<תג>.json = הקלטה מחדש אחרת (למשל "n2" = ניקוד מלא)
+  const byFrom = new Map<number, { ts: number; tag: string }>();
+  for (const n of names) {
+    const m = n.match(/^nq-(\d+)-(\d+)(?:-([a-z0-9]+))?\.json$/);
+    if (!m) continue;
+    const ts = Number(m[1]);
+    const from = Number(m[2]);
+    const prev = byFrom.get(from);
+    if (!prev || ts > prev.ts) byFrom.set(from, { ts, tag: m[3] || "n" });
+  }
+  const nqSegs = [...byFrom.entries()].sort((a, b) => a[0] - b[0]).map(([from, v]) => ({ from, tag: v.tag }));
   // fx-<זמן>-<קטע>.json = הקטע הוקלט מחדש (האחרון לכל קטע קובע)
   let fixes: Record<number, number> | undefined;
   for (const n of names) {
@@ -175,7 +196,7 @@ async function readMarkers(id: string): Promise<{ trGen?: string; nqFrom?: numbe
     const i = Number(m[2]);
     if (!fixes[i] || ts > fixes[i]) fixes[i] = ts;
   }
-  return { trGen: gens.sort((a, b) => Number(b) - Number(a))[0], nqFrom: nqs[0] ? Number(nqs[0][2]) : undefined, fixes };
+  return { trGen: gens.sort((a, b) => Number(b) - Number(a))[0], nqSegs: nqSegs.length ? nqSegs : undefined, fixes };
 }
 
 /** הדור הנוכחי של התרגום. */
@@ -184,8 +205,9 @@ export async function readTrGen(id: string): Promise<string | undefined> {
 }
 
 /** ניקוד מהקטע הזה והלאה: השמע העברי שלהם יוקלט מחדש (בתיקייה נפרדת), הקודמים נשארים כמו שהם. */
-export async function setNqFrom(id: string, from: number, now = Date.now()): Promise<number> {
-  await store.writeJSON(`${P.trGen(id)}nq-${now}-${from}.json`, { at: new Date(now).toISOString(), from });
+export async function setNqFrom(id: string, from: number, tag = NIQQUD_TAG, now = Date.now()): Promise<number> {
+  const name = tag === "n" ? `nq-${now}-${from}.json` : `nq-${now}-${from}-${tag}.json`;
+  await store.writeJSON(`${P.trGen(id)}${name}`, { at: new Date(now).toISOString(), from, tag });
   return from;
 }
 

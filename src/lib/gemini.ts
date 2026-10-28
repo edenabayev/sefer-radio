@@ -33,7 +33,12 @@ async function withThinkingFallback<T>(fn: (cfg: GenerateContentConfig) => Promi
   }
 }
 
-export async function genText(prompt: string, system?: string, maxOutputTokens = 8192, opts: { thinking?: "LOW" | "MEDIUM" | "HIGH"; model?: string; temperature?: number } = {}): Promise<string> {
+export async function genText(
+  prompt: string,
+  system?: string,
+  maxOutputTokens = 8192,
+  opts: { thinking?: "LOW" | "MEDIUM" | "HIGH"; model?: string; temperature?: number; onUsage?: (u: { in: number; out: number }) => void } = {},
+): Promise<string> {
   if (MOCK) return `[דמה] ${prompt.slice(0, 200)}`;
   const base: GenerateContentConfig = { systemInstruction: system, maxOutputTokens, temperature: opts.temperature ?? 0.4 };
   const res = await withThinkingFallback(
@@ -41,6 +46,8 @@ export async function genText(prompt: string, system?: string, maxOutputTokens =
     base,
     opts.thinking,
   );
+  const um = res.usageMetadata;
+  if (um && opts.onUsage) opts.onUsage({ in: um.promptTokenCount ?? 0, out: (um.candidatesTokenCount ?? 0) + (um.thoughtsTokenCount ?? 0) });
   const text = res.text ?? "";
   if (!text.trim()) throw new Error("Gemini החזיר תשובה ריקה (" + JSON.stringify(res.candidates?.[0]?.finishReason) + ")");
   return text.trim();

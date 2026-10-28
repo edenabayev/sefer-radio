@@ -1,7 +1,7 @@
 // הכנה מראש: מייצרים שמע לקטעים מהמקום הנוכחי ועד סוף הפרק השני הבא, בסדר ההאזנה.
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
-import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heFixDir, heMapPath, heTextPath, prefetchSpokenText, trSuffix, type Book } from "./books";
+import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heFixDir, heMapPath, heTextPath, nqTagFor, prefetchSpokenText, trSuffix, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { KOKORO_VERSION, KOKORO_DEFAULT, isKokoroVoice } from "./kokoro-voices";
@@ -29,19 +29,19 @@ export function audioLang(book: Book, lang: "he" | "orig" | undefined): "he" | "
   return lang === "orig" && book.lang !== "he" ? "en" : "he";
 }
 
-/** קובץ השמע של כל קטע. בעברית עם ניקוד (book.nqFrom): קטעים מ-nqFrom והלאה רק מהתיקייה המנוקדת,
- *  והקודמים רק מהרגילה — כך שזרם שהוגדר עם סימון מסוים תמיד מקבל את אותם קבצים. */
+/** קובץ השמע של כל קטע. בעברית עם הקלטות מחדש (book.nqSegs): כל קטע נלקח רק מהתיקייה של הסימון שלו
+ *  (nqTagFor) — כך שזרם שהוגדר עם סימונים מסוימים תמיד מקבל את אותם קבצים. */
 export async function audioFilesFor(book: Book, voice: string, lang: "he" | "en"): Promise<Map<number, store.FileInfo>> {
-  const nqFrom = lang === "he" ? book.nqFrom : undefined;
-  const dirs = [P.audioDir(book, voice, lang), ...(nqFrom != null ? [heAudioDir(book, voice, true)] : [])];
-  const lists = await Promise.all(dirs.map((d) => store.listFiles(d)));
+  const tags = lang === "he" ? [...new Set((book.nqSegs ?? []).map((s) => s.tag))] : [];
+  const dirs: { dir: string; tag?: string }[] = [{ dir: P.audioDir(book, voice, lang) }, ...tags.map((tag) => ({ dir: heAudioDir(book, voice, tag), tag }))];
+  const lists = await Promise.all(dirs.map((d) => store.listFiles(d.dir)));
   const out = new Map<number, store.FileInfo>();
   lists.forEach((files, k) => {
     for (const f of files) {
-      const m = f.path.slice(dirs[k].length).match(/^(\d+)\.mp3$/);
+      const m = f.path.slice(dirs[k].dir.length).match(/^(\d+)\.mp3$/);
       if (!m) continue;
       const i = Number(m[1]);
-      if (nqFrom != null && (k === 1) !== i >= nqFrom) continue;
+      if (lang === "he" && nqTagFor(book, i) !== dirs[k].tag) continue;
       out.set(i, f);
     }
   });
