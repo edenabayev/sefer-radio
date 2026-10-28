@@ -1,7 +1,7 @@
 // הכנה מראש: מייצרים שמע לקטעים מהמקום הנוכחי ועד סוף הפרק השני הבא, בסדר ההאזנה.
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
-import { getBook, getProgress, ensureAudio, ensureTranslation, heDir, heMapPath, heTextPath, trSuffix, type Book } from "./books";
+import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heMapPath, heTextPath, trSuffix, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { KOKORO_VERSION, KOKORO_DEFAULT, isKokoroVoice } from "./kokoro-voices";
@@ -11,8 +11,7 @@ export const CHAPTERS_AHEAD = 2;
 // כל מה שנוצר מהתרגום (שמע עברי, תקצירים, שאלות, דוגמת קול) — בנתיב של דור התרגום (trSuffix), כדי ש"תרגם מחדש" יתחיל נקי
 const P = {
   lock: (id: string) => `books/${id}/prep.lock.json`,
-  audioDir: (book: Book, voice: string, lang: "he" | "en" = "he") =>
-    `books/${book.id}/audio/${lang}/${voice}-${lang === "en" ? KOKORO_VERSION : TTS_VERSION + trSuffix(book)}/`,
+  audioDir: (book: Book, voice: string, lang: "he" | "en" = "he") => (lang === "en" ? `books/${book.id}/audio/en/${voice}-${KOKORO_VERSION}/` : heAudioDir(book, voice)),
   recap: (book: Book, i: number, voice: string) => `books/${book.id}/recap/${voice}-${TTS_VERSION}${trSuffix(book)}/${i}`,
   questionDir: (book: Book, voice: string) => `books/${book.id}/questions/${voice}-${TTS_VERSION}-p6${trSuffix(book)}/`, // p6 = עם 6 שניות שקט בסוף
   preview: (book: Book, voice: string) => `books/${book.id}/preview/${voice}-${isKokoroVoice(voice) ? KOKORO_VERSION : TTS_VERSION + trSuffix(book)}.mp3`,
@@ -27,15 +26,28 @@ export function audioLang(book: Book, lang: "he" | "orig" | undefined): "he" | "
   return lang === "orig" && book.lang !== "he" ? "en" : "he";
 }
 
+/** קובץ השמע של כל קטע. בעברית עם ניקוד (book.nqFrom): קטעים מ-nqFrom והלאה רק מהתיקייה המנוקדת,
+ *  והקודמים רק מהרגילה — כך שזרם שהוגדר עם סימון מסוים תמיד מקבל את אותם קבצים. */
+export async function audioFilesFor(book: Book, voice: string, lang: "he" | "en"): Promise<Map<number, store.FileInfo>> {
+  const nqFrom = lang === "he" ? book.nqFrom : undefined;
+  const dirs = [P.audioDir(book, voice, lang), ...(nqFrom != null ? [heAudioDir(book, voice, true)] : [])];
+  const lists = await Promise.all(dirs.map((d) => store.listFiles(d)));
+  const out = new Map<number, store.FileInfo>();
+  lists.forEach((files, k) => {
+    for (const f of files) {
+      const m = f.path.slice(dirs[k].length).match(/^(\d+)\.mp3$/);
+      if (!m) continue;
+      const i = Number(m[1]);
+      if (nqFrom != null && (k === 1) !== i >= nqFrom) continue;
+      out.set(i, f);
+    }
+  });
+  return out;
+}
+
 /** אילו קטעים כבר יש להם שמע בשפה הזו ובקול הזה. */
 export async function readyMap(book: Book, voice: string, lang: "he" | "en" = "he"): Promise<number[]> {
-  const dir = P.audioDir(book, voice, lang);
-  const paths = await store.listPaths(dir);
-  return paths
-    .map((p) => p.slice(dir.length))
-    .filter((f) => /^\d+\.mp3$/.test(f))
-    .map((f) => Number(f.replace(".mp3", "")))
-    .sort((a, b) => a - b);
+  return [...(await audioFilesFor(book, voice, lang)).keys()].sort((a, b) => a - b);
 }
 
 /** טווח ההכנה. עברית (גוגל, עולה כסף): מהקטע הנוכחי עד סוף הפרק (current + CHAPTERS_AHEAD).

@@ -3,7 +3,7 @@
 // ה-MP3 בקצב קבוע (48kbps) ולכן משך = גודל / 6000, וזה מה שמאפשר למפות זמן ↔ קטע ולהגיש Range.
 import * as store from "./storage";
 import type { Book } from "./books";
-import { audioDirFor, questionDirFor } from "./prepare";
+import { audioFilesFor, questionDirFor } from "./prepare";
 
 export const BYTES_PER_SEC = 6000; // 48kbps CBR
 const MAX_SECONDS = 4 * 3600;
@@ -23,21 +23,32 @@ export interface Manifest {
   qs: number[]; // פרקים שהשאלה שלהם כלולה
   lang: "he" | "en";
   voice: string;
-  gen?: string; // דור התרגום — כדי שהזרם יישאר בדיוק אותו זרם גם אם בינתיים לחצו "תרגם מחדש"
+  gen?: string; // דור התרגום (וסימון הניקוד, "~n<קטע>") — כדי שהזרם יישאר בדיוק אותו זרם גם אם בינתיים משהו השתנה
   items: StreamItem[];
   totalSeconds: number;
   totalBytes: number;
 }
 
+/** "gen" בכתובת הזרם: דור התרגום + סימון הניקוד. הלקוח מעביר אותו כמו שהוא — כך זרם ישן (בלי "~n")
+ *  ממשיך לקבל בדיוק את הקבצים הישנים, וזרם חדש מקבל את המנוקדים. */
+export function encodeGen(book: Pick<Book, "lang" | "trGen" | "nqFrom">): string | undefined {
+  const g = (book.lang !== "he" && book.trGen ? book.trGen : "") + (book.nqFrom != null ? `~n${book.nqFrom}` : "");
+  return g || undefined;
+}
+export function parseGen(g: string | null | undefined): { trGen?: string; nqFrom?: number } {
+  const [tr, nq] = (g || "").split("~n");
+  return { trGen: tr || undefined, nqFrom: nq != null && /^\d+$/.test(nq) ? Number(nq) : undefined };
+}
+/** מחילים על הספר את מה שכתוב בכתובת (בשביל זרם יציב). */
+export function applyGen(book: Book, g: string | null | undefined) {
+  const p = parseGen(g);
+  if (book.lang !== "he") book.trGen = p.trGen;
+  book.nqFrom = p.nqFrom;
+}
+
 async function files(book: Book, voice: string, lang: "he" | "en") {
-  const aDir = audioDirFor(book, voice, lang);
   const qDir = questionDirFor(book, voice);
-  const [a, q] = await Promise.all([store.listFiles(aDir), lang === "he" ? store.listFiles(qDir) : Promise.resolve([] as store.FileInfo[])]);
-  const sections = new Map<number, store.FileInfo>();
-  for (const f of a) {
-    const m = f.path.slice(aDir.length).match(/^(\d+)\.mp3$/);
-    if (m) sections.set(Number(m[1]), f);
-  }
+  const [sections, q] = await Promise.all([audioFilesFor(book, voice, lang), lang === "he" ? store.listFiles(qDir) : Promise.resolve([] as store.FileInfo[])]);
   const questions = new Map<number, store.FileInfo>();
   for (const f of q) {
     const m = f.path.slice(qDir.length).match(/^(\d+)\.mp3$/);
@@ -73,7 +84,7 @@ export async function buildManifest(book: Book, from: number, lang: "he" | "en",
       qs.push(c);
     }
   }
-  return { from, upto, qs, lang, voice, gen: lang === "he" ? book.trGen : undefined, items, totalSeconds: t, totalBytes: bytes };
+  return { from, upto, qs, lang, voice, gen: lang === "he" ? encodeGen(book) : undefined, items, totalSeconds: t, totalBytes: bytes };
 }
 
 /** אותו זרם בדיוק כפי שהוגדר בכתובת (from/upto/qs) — יציב גם אם בינתיים הוכנו עוד קטעים. */

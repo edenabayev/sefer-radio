@@ -3,7 +3,7 @@
 // כל סימון נשמר כקובץ נפרד (Blob מחזיר גרסה ישנה זמן מה אחרי דריסת קובץ באותו שם).
 import * as store from "./storage";
 import type { Book, Progress } from "./books";
-import { audioDirFor, audioLang, heTexts, recap, speak } from "./prepare";
+import { audioFilesFor, audioLang, heTexts, recap, speak } from "./prepare";
 import { BYTES_PER_SEC } from "./stream";
 import { genText, VOICE, TTS_VERSION } from "./gemini";
 import { bookHeaders } from "./text";
@@ -99,13 +99,8 @@ export function sessionState(session: SleepSession | null, progress: Progress, n
 
 /** אורך כל קטע בשניות (מגודל קובץ ה-MP3, שהוא בקצב קבוע), ואם אין קובץ — הערכה לפי אורך הטקסט. */
 async function sectionSeconds(book: Book, lang: "he" | "en", voice: string, texts: Record<number, string>, idx: number[]) {
-  const d = audioDirFor(book, voice, lang);
-  const files = await store.listFiles(d);
   const sizes = new Map<number, number>();
-  for (const f of files) {
-    const m = f.path.slice(d.length).match(/^(\d+)\.mp3$/);
-    if (m) sizes.set(Number(m[1]), f.size);
-  }
+  for (const [i, f] of await audioFilesFor(book, voice, lang)) sizes.set(i, f.size);
   const out: Record<number, number> = {};
   for (const i of idx) {
     const size = sizes.get(i);

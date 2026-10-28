@@ -33,9 +33,9 @@ async function withThinkingFallback<T>(fn: (cfg: GenerateContentConfig) => Promi
   }
 }
 
-export async function genText(prompt: string, system?: string, maxOutputTokens = 8192, opts: { thinking?: "LOW" | "MEDIUM" | "HIGH"; model?: string } = {}): Promise<string> {
+export async function genText(prompt: string, system?: string, maxOutputTokens = 8192, opts: { thinking?: "LOW" | "MEDIUM" | "HIGH"; model?: string; temperature?: number } = {}): Promise<string> {
   if (MOCK) return `[דמה] ${prompt.slice(0, 200)}`;
-  const base: GenerateContentConfig = { systemInstruction: system, maxOutputTokens, temperature: 0.4 };
+  const base: GenerateContentConfig = { systemInstruction: system, maxOutputTokens, temperature: opts.temperature ?? 0.4 };
   const res = await withThinkingFallback(
     (config) => ai().models.generateContent({ model: opts.model || MODELS.text, contents: prompt, config }),
     base,
@@ -180,7 +180,8 @@ export function cleanForTts(text: string): string {
 
 /** מסיר ניקוד וטעמים (כשהמנוע נכשל על טקסט מנוקד). */
 export function stripNiqqud(text: string): string {
-  return text.replace(/[\u0591-\u05C7]/g, "");
+  // המקף העברי (05BE) ושאר סימני הפיסוק (05C0, 05C3, 05C6) נשארים
+  return text.replace(/[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]/g, "");
 }
 
 /** מפרק טקסט ארוך לחתיכות שמנוע הקול מקבל — לפי *בייטים* (עברית מנוקדת שוקלת הרבה יותר מאותיות). */

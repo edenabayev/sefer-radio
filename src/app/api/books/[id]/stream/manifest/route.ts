@@ -1,6 +1,7 @@
 import { ok, fail, authorized } from "@/lib/api";
 import { getBook, getProgress } from "@/lib/books";
 import { buildManifest, audioVoiceFor, langFor } from "@/lib/stream-params";
+import { applyGen } from "@/lib/stream";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     // עם upto — מחזירים בדיוק את הזרם שבכתובת (לבדיקות ולסנכרון), לא "כל מה שמוכן עכשיו"
     const upto = sp.get("upto");
     const fixed = upto != null ? { upto: Number(upto), qs: (sp.get("qs") || "").split(",").filter(Boolean).map(Number) } : undefined;
+    if (fixed && sp.has("gen")) applyGen(book, sp.get("gen")); // אותו זרם בדיוק — עם הדור והניקוד שבכתובת
     const max = Number(sp.get("max")) || undefined; // שניות — לזרם הבא שנטען מראש לזיכרון
     return ok(await buildManifest(book, from, lang, voice, study, fixed, max));
   } catch (e) {

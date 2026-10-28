@@ -2,7 +2,7 @@
 // לכן היא יציבה גם כשבינתיים הוכנו עוד קטעים.
 import { fail, authorized } from "@/lib/api";
 import { getBook, getProgress } from "@/lib/books";
-import { resolveStream, rangeStream } from "@/lib/stream";
+import { resolveStream, rangeStream, applyGen } from "@/lib/stream";
 import { audioVoiceFor, langFor } from "@/lib/stream-params";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ async function handle(req: Request, ctx: { params: Promise<{ id: string }> }, he
     if (!book) return fail("אין ספר כזה", 404);
     const sp = new URL(req.url).searchParams;
     // הדור שהיה כשהזרם הוגדר (ולא מה שקורה עכשיו) — הזרם יציב
-    if (sp.has("gen") && book.lang !== "he") book.trGen = sp.get("gen") || undefined;
+    if (sp.has("gen")) applyGen(book, sp.get("gen"));
     const progress = await getProgress(id);
     const lang = langFor(book, sp.get("lang"), progress);
     const voice = audioVoiceFor(sp.get("voice"), lang, progress);
