@@ -11,6 +11,9 @@ export const CHAPTERS_AHEAD = 2;
 // כל מה שנוצר מהתרגום (שמע עברי, תקצירים, שאלות, דוגמת קול) — בנתיב של דור התרגום (trSuffix), כדי ש"תרגם מחדש" יתחיל נקי
 const P = {
   lock: (id: string) => `books/${id}/prep.lock.json`,
+  // קטע שנכשל בהכנה ברקע: לא מנסים אותו שוב שעה (שם ייחודי לכל כישלון — רשימת הקבצים תמיד טרייה).
+  // בלי זה, כישלון קבוע (למשל גוגל שמסרב) חזר על עצמו כל דקה, כל הלילה, ועלה כסף.
+  failDir: (id: string) => `books/${id}/prepfail/`,
   audioDir: (book: Book, voice: string, lang: "he" | "en" = "he") => (lang === "en" ? `books/${book.id}/audio/en/${voice}-${KOKORO_VERSION}/` : heAudioDir(book, voice)),
   recap: (book: Book, i: number, voice: string) => `books/${book.id}/recap/${voice}-${TTS_VERSION}${trSuffix(book)}/${i}`,
   questionDir: (book: Book, voice: string) => `books/${book.id}/questions/${voice}-${TTS_VERSION}-p6${trSuffix(book)}/`, // p6 = עם 6 שניות שקט בסוף
@@ -84,8 +87,9 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   if (!progress.startedAt) return { ready, range: [from, from - 1], total: book.sections.length, busy: false, generated: 0, lang };
   const range = targetRange(book, from, lang);
   const readySet = new Set(ready);
+  const recentFail = await recentFailures(id);
   const todo: number[] = [];
-  for (let i = range[0]; i <= range[1]; i++) if (!readySet.has(i)) todo.push(i);
+  for (let i = range[0]; i <= range[1]; i++) if (!readySet.has(i) && !recentFail.has(i)) todo.push(i);
   if (!book.background && book.lang !== "other") {
     // כרטיס רקע לשיחה — פעם אחת לספר, כדי שהשיחה הראשונה לא תחכה לו
     const { ensureBackground } = await import("./conversation");
@@ -107,13 +111,14 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   let generated = 0;
   let failed = 0;
   let error: string | undefined;
+  let ahead: Promise<void> | null = null; // ההכנה מראש של הקטע הבא — מחכים לה לפני שמשחררים את הנעילה (אחרת ריצה אחרת תנקד שוב)
   try {
     for (const [k, i] of todo.entries()) {
       if (Date.now() - start > budget) break;
       try {
         const audio = ensureAudio(book, i, lang === "he" ? "he" : "orig", voice);
         // עברית: התרגום והניקוד של הקטע הבא רצים בזמן שהקול של הקטע הזה נוצר (התרגום שלו כבר נרשם — הבא יחכה לו)
-        if (lang === "he" && todo[k + 1] != null) prefetchSpokenText(book, todo[k + 1]);
+        if (lang === "he" && todo[k + 1] != null) ahead = prefetchSpokenText(book, todo[k + 1]);
         await audio;
         generated++;
         failed = 0;
@@ -123,11 +128,13 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
         failed++;
         error = (e as Error).message;
         console.warn(`prepare ${id} section ${i} (${lang}):`, error);
+        await store.writeJSON(`${P.failDir(id)}${i}-${Date.now()}.json`, { lang, error }).catch(() => {});
         if (failed >= 2) break;
       }
       await setLock();
     }
   } finally {
+    if (ahead) await Promise.race([ahead, new Promise((r) => setTimeout(r, 90_000))]);
     await store.remove(P.lock(id));
   }
   ready = [...readySet].sort((a, b) => a - b);
@@ -149,6 +156,18 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
     }
   }
   return { ready, range, total: book.sections.length, busy: false, generated, lang, error };
+}
+
+const FAIL_BACKOFF_MS = 60 * 60 * 1000;
+/** קטעים שנכשלו בהכנה ברקע בשעה האחרונה — לא מנסים אותם שוב עכשיו (האזנה עצמה עדיין יכולה לבקש אותם). */
+async function recentFailures(id: string): Promise<Set<number>> {
+  const dir = P.failDir(id);
+  const out = new Set<number>();
+  for (const path of await store.listPaths(dir).catch(() => [] as string[])) {
+    const m = path.slice(dir.length).match(/^(\d+)-(\d+)\.json$/);
+    if (m && Date.now() - Number(m[2]) < FAIL_BACKOFF_MS) out.add(Number(m[1]));
+  }
+  return out;
 }
 
 /** מפת התרגומים לתצוגה (קובץ אחד במקום מאות קריאות). */

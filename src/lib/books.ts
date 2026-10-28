@@ -553,9 +553,9 @@ export async function ensureTranslation(book: Book, i: number, opts: { save?: bo
 
 /** הכנה מראש של הטקסט לקול (תרגום + ניקוד) לקטע הבא — בזמן שהקול של הקטע הנוכחי נוצר.
  *  קודם מחכים לתרגום של הקטע שלפניו (אם הוא בדרך) — המתרגם משתמש בסופו כהקשר. */
-export function prefetchSpokenText(book: Book, i: number): void {
-  if (!book.sections[i]) return;
-  void (async () => {
+export function prefetchSpokenText(book: Book, i: number): Promise<void> {
+  if (!book.sections[i]) return Promise.resolve();
+  return (async () => {
     if (i > 0) await ensureTranslation(book, i - 1).catch(() => null);
     const text = await ensureTranslation(book, i);
     await (await import("./niqqud")).withNiqqud(niqqudPath(book, i), text, `${book.id}#${i}`);
