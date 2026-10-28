@@ -1,7 +1,7 @@
 // הכנה מראש: מייצרים שמע לקטעים מהמקום הנוכחי ועד סוף הפרק השני הבא, בסדר ההאזנה.
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
-import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heMapPath, heTextPath, trSuffix, type Book } from "./books";
+import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heMapPath, heTextPath, prefetchSpokenText, trSuffix, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
 import { KOKORO_VERSION, KOKORO_DEFAULT, isKokoroVoice } from "./kokoro-voices";
@@ -108,10 +108,13 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   let failed = 0;
   let error: string | undefined;
   try {
-    for (const i of todo) {
+    for (const [k, i] of todo.entries()) {
       if (Date.now() - start > budget) break;
       try {
-        await ensureAudio(book, i, lang === "he" ? "he" : "orig", voice);
+        const audio = ensureAudio(book, i, lang === "he" ? "he" : "orig", voice);
+        // עברית: התרגום והניקוד של הקטע הבא רצים בזמן שהקול של הקטע הזה נוצר (התרגום שלו כבר נרשם — הבא יחכה לו)
+        if (lang === "he" && todo[k + 1] != null) prefetchSpokenText(book, todo[k + 1]);
+        await audio;
         generated++;
         failed = 0;
         readySet.add(i);

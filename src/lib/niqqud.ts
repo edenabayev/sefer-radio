@@ -6,13 +6,13 @@ import * as store from "./storage";
 import { genText, MOCK } from "./gemini";
 
 /** סימני ניקוד וטעמים — בלי מקף עברי (05BE), פסק (05C0), סוף פסוק (05C3) ונו"ן הפוכה (05C6), שהם פיסוק. */
-const MARKS = /[֑-ׇֽֿׁׂׅׄ]/g;
+const MARKS = /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]/g;
 
 export function stripNiqqud(s: string): string {
   return s.replace(MARKS, "");
 }
 
-export const hasNiqqud = (s: string) => /[ְ-ׇּׁׂ]/.test(s);
+export const hasNiqqud = (s: string) => /[\u05B0-\u05BC\u05C1\u05C2\u05C7]/.test(s);
 
 /** מכניסים לטקסט המקורי רק מילים מנוקדות שהאותיות שלהן זהות לגמרי למקור (כולל פיסוק צמוד).
  *  מילים שהמודל הוסיף, מחק או שינה — נשארות כמו במקור. התוצאה, בלי ניקוד, שווה בדיוק למקור. */
@@ -104,7 +104,7 @@ export async function vocalize(text: string): Promise<{ text: string; marked: nu
   const parts = chunksForNiqqud(text);
   const done = await Promise.all(
     parts.map(async (part) => {
-      if (!/[א-ת]/.test(part)) return { text: part, marked: 0, words: 0 };
+      if (!/[\u05D0-\u05EA]/.test(part)) return { text: part, marked: 0, words: 0 };
       const raw = await genText("הטקסט:\n\n" + part, NIQQUD_SYSTEM, 16384, { thinking: "MEDIUM", temperature: 0.1 });
       return mergeNiqqud(part, cleanModelOutput(raw));
     }),
@@ -114,9 +114,24 @@ export async function vocalize(text: string): Promise<{ text: string; marked: nu
 
 /** הטקסט המנוקד לקטע (נשמר פעם אחת). אם הניקוד נכשל — הטקסט הרגיל, כדי שההקראה לא תיעצר. */
 export async function withNiqqud(path: string, text: string, label: string): Promise<string> {
-  if (MOCK || !/[א-ת]/.test(text)) return text;
+  if (MOCK || !/[\u05D0-\u05EA]/.test(text)) return text;
+  // אותו קטע כבר מנוקד ברגע זה (הכנה מראש של הקטע הבא) — מחכים לו במקום לנקד פעמיים
+  const running = inFlight.get(path);
+  if (running) {
+    const r = await running;
+    if (stripNiqqud(r) === text) return r;
+  }
   const cached = await store.readText(path);
   if (cached && stripNiqqud(cached) === text) return cached;
+  const run = vocalizeAndSave(path, text, label);
+  inFlight.set(path, run);
+  run.finally(() => inFlight.delete(path)).catch(() => {});
+  return run;
+}
+
+const inFlight = new Map<string, Promise<string>>();
+
+async function vocalizeAndSave(path: string, text: string, label: string): Promise<string> {
   try {
     const t0 = Date.now();
     const r = await vocalize(text);

@@ -503,22 +503,47 @@ export async function extractStep(id: string, opts: { retry?: boolean; restart?:
 
 /** תרגום קטע לעברית — לפי כרטיס התרגום של הספר (אם אין — חוקרים קודם; אם המחקר לא אפשרי עכשיו — בלי כרטיס).
  *  נשמר פעם אחת לכל דור. עם save:false — דוגמה שלא נשמרת (לבדיקת הכרטיס). */
+// תרגום שכבר רץ באותו תהליך (למשל הכנה מראש של הקטע הבא) — מחכים לו במקום לתרגם פעמיים.
+// נרשם מיד בקריאה (לפני בדיקת הקובץ), כדי ששתי קריאות צמודות לא יתרגמו שתיהן.
+const trInFlight = new Map<string, Promise<string>>();
+
 export async function ensureTranslation(book: Book, i: number, opts: { save?: boolean; model?: string } = {}): Promise<string> {
   const sec = book.sections[i];
   if (!sec) throw new Error("אין קטע " + i);
   if (book.lang === "he") return sec.text;
   const save = opts.save !== false;
-  if (save) {
-    const cached = await store.readText(heTextPath(book, i));
+  const key = heTextPath(book, i);
+  const translate = async () => {
+    const { ensureCard, translationPrompt } = await import("./translation");
+    const card = await ensureCard(book, { wait: true }).catch(() => null);
+    const prevHe = i > 0 ? await store.readText(heTextPath(book, i - 1)) : null;
+    const { system, prompt } = translationPrompt(book, i, card, prevHe);
+    return cleanTranslation(await genText(prompt, system, 8192, { thinking: "MEDIUM", model: opts.model }));
+  };
+  if (!save) return translate();
+  const running = trInFlight.get(key);
+  if (running) return running;
+  const run = (async () => {
+    const cached = await store.readText(key);
     if (cached) return cached;
-  }
-  const { ensureCard, translationPrompt } = await import("./translation");
-  const card = await ensureCard(book, { wait: true }).catch(() => null);
-  const prevHe = i > 0 ? await store.readText(heTextPath(book, i - 1)) : null;
-  const { system, prompt } = translationPrompt(book, i, card, prevHe);
-  const he = cleanTranslation(await genText(prompt, system, 8192, { thinking: "MEDIUM", model: opts.model }));
-  if (save) await store.writeBytes(heTextPath(book, i), he, "text/plain; charset=utf-8");
-  return he;
+    const he = await translate();
+    await store.writeBytes(key, he, "text/plain; charset=utf-8");
+    return he;
+  })();
+  trInFlight.set(key, run);
+  run.finally(() => trInFlight.delete(key)).catch(() => {});
+  return run;
+}
+
+/** הכנה מראש של הטקסט לקול (תרגום + ניקוד) לקטע הבא — בזמן שהקול של הקטע הנוכחי נוצר.
+ *  קודם מחכים לתרגום של הקטע שלפניו (אם הוא בדרך) — המתרגם משתמש בסופו כהקשר. */
+export function prefetchSpokenText(book: Book, i: number): void {
+  if (!book.sections[i]) return;
+  void (async () => {
+    if (i > 0) await ensureTranslation(book, i - 1).catch(() => null);
+    const text = await ensureTranslation(book, i);
+    await (await import("./niqqud")).withNiqqud(niqqudPath(book, i), text, `${book.id}#${i}`);
+  })().catch((e) => console.warn("prefetch", book.id, i, (e as Error).message));
 }
 
 /** מה שהמודל מוסיף לפעמים מסביב לתרגום: "הנה התרגום:", מרכאות קוד, תגיות ההקשר. */
