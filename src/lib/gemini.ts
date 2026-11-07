@@ -33,6 +33,12 @@ async function withThinkingFallback<T>(fn: (cfg: GenerateContentConfig) => Promi
   }
 }
 
+/** נגמר הקרדיט בחשבון Google AI Studio (HTTP 402) — גוגל מסרב לכל בקשה עד שטוענים. */
+export const CREDITS_MESSAGE = "נגמר הקרדיט בחשבון Google AI Studio, ולכן גוגל לא מתרגם ולא מקריא בעברית. צריך לטעון קרדיט: AI Studio ← Billing. בינתיים אפשר להאזין במקור.";
+export function isCreditsError(msg: string): boolean {
+  return /prepayment credits are depleted|credits are depleted|"code":\s*402|\b402\b.*(billing|credit)/i.test(msg);
+}
+
 export async function genText(
   prompt: string,
   system?: string,

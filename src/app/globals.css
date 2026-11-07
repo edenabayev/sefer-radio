@@ -322,6 +322,12 @@ h2 {
   max-width: 720px;
   margin: 0 auto;
 }
+.playerBar .status {
+  padding: 4px 2px 6px;
+  line-height: 1.45;
+  max-height: 6em;
+  overflow-y: auto;
+}
 .playerBar .bar {
   margin: 4px 0;
   cursor: pointer;

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { CREDITS_MESSAGE, isCreditsError } from "./gemini";
 
 export function ok(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -6,6 +7,10 @@ export function ok(data: unknown, init?: ResponseInit) {
 
 export function fail(e: unknown, status = 500) {
   const message = e instanceof Error ? e.message : String(e);
+  if (isCreditsError(message)) {
+    console.warn("[api] credits depleted");
+    return NextResponse.json({ error: CREDITS_MESSAGE, code: "credits" }, { status: 402 });
+  }
   console.error("[api]", message, e instanceof Error ? e.stack : "");
   return NextResponse.json({ error: message }, { status });
 }

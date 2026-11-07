@@ -347,7 +347,9 @@ export default function Player({ id }: { id: string }) {
               ? "מכין את הקטע במקור…"
               : tcardStateRef.current === "researching" && b.lang !== "he"
                 ? "בודק מי תרגם את הספר לעברית ואיך (פעם אחת לספר, דקה-שלוש)… ואז מכין את הקטע"
-                : "מכין את הקטע הזה…",
+                : b.lang !== "he"
+                  ? "מתרגם, מנקד ומקליט את הקטע הזה — עד כשתי דקות…"
+                  : "מנקד ומקליט את הקטע הזה — עד כדקה וחצי…",
           );
           await fetchAudio(i, l, v);
           if (token !== playToken.current) return;
@@ -1239,13 +1241,6 @@ export default function Player({ id }: { id: string }) {
       </header>
 
       <main className="bookText" dir={showOrig ? "ltr" : "rtl"}>
-        {loading && (
-          <p className="muted small">
-            <span className="spinner" /> {loading}
-          </p>
-        )}
-        {err && <p className="err small">{err}</p>}
-        {prepErr && !err && <p className="err small">ההכנה ברקע נעצרה: {prepErr}</p>}
         {interlude && (
           <div className="interlude">
             <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
@@ -1291,6 +1286,20 @@ export default function Player({ id }: { id: string }) {
       </main>
 
       <footer className="playerBar">
+        {/* מה קורה עכשיו — בתחתית הקבועה, כי בראש הטקסט (שגולל לקטע הנוכחי) לא רואים את זה */}
+        {(loading || err || prepErr) && (
+          <div className="status small" role="status" aria-live="polite">
+            {loading ? (
+              <span className="muted">
+                <span className="spinner" /> {loading}
+              </span>
+            ) : err ? (
+              <span className="err">{err}</span>
+            ) : (
+              <span className="err">ההכנה ברקע נעצרה: {prepErr}</span>
+            )}
+          </div>
+        )}
         <div className="bar" onClick={(e) => {
           if (!pos.d) return;
           const r = e.currentTarget.getBoundingClientRect();

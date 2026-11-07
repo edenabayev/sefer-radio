@@ -1,6 +1,7 @@
 // הכנה מראש: מייצרים שמע לקטעים מהמקום הנוכחי ועד סוף הפרק השני הבא, בסדר ההאזנה.
 // רץ גם מהלקוח (כשהספר פתוח) וגם מ-cron (כשהאפליקציה סגורה); נעילה קצרה מונעת כפילות.
 import * as store from "./storage";
+import { CREDITS_MESSAGE, isCreditsError } from "./gemini";
 import { getBook, getProgress, ensureAudio, ensureTranslation, heAudioDir, heDir, heFixDir, heMapPath, heTextPath, nqTagFor, prefetchSpokenText, trSuffix, type Book } from "./books";
 import { genText, tts, SAMPLE_RATE, VOICE, TTS_VERSION } from "./gemini";
 import { pcm16ToMp3 } from "./mp3";
@@ -96,6 +97,11 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
   // כלום לא נוצר לפני ▶ הראשון בספר
   if (!progress.startedAt) return { ready, range: [from, from - 1], total: book.sections.length, busy: false, generated: 0, lang };
   const range = targetRange(book, from, lang);
+  // נגמר הקרדיט בגוגל (מישהו נתקל בזה ברבע השעה האחרונה): עברית לא תעבוד — לא מנסים כל דקה
+  if (lang === "he" && (await creditsOutRecently())) {
+    if (lang === "he") await mergeHeMap(book, ready);
+    return { ready, range, total: book.sections.length, busy: false, generated: 0, lang, error: CREDITS_MESSAGE };
+  }
   const readySet = new Set(ready);
   const recentFail = await recentFailures(id);
   const todo: number[] = [];
@@ -137,6 +143,13 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
         // קטע שנכשל לא עוצר את כולם — אבל שני כישלונות ברצף כן (כנראה בעיה כללית, לא נקודתית)
         failed++;
         error = (e as Error).message;
+        if (isCreditsError(error)) {
+          // לא בעיה של הקטע — של החשבון. עוצרים מיד, בלי לסמן קטעים ככושלים (כשיטענו קרדיט, הכול ימשיך מיד)
+          console.warn(`prepare ${id}: credits depleted, stopping`);
+          await store.writeJSON(`${CREDITS_DIR}${Date.now()}.json`, { book: id }).catch(() => {});
+          error = CREDITS_MESSAGE;
+          break;
+        }
         console.warn(`prepare ${id} section ${i} (${lang}):`, error);
         await store.writeJSON(`${P.failDir(id)}${i}-${Date.now()}.json`, { lang, error }).catch(() => {});
         if (failed >= 2) break;
@@ -169,6 +182,16 @@ export async function prepare(id: string, opts: { voice?: string; budgetMs?: num
 }
 
 const FAIL_BACKOFF_MS = 60 * 60 * 1000;
+// נגמר הקרדיט בגוגל: סימון כללי (שם ייחודי לכל פעם), וההכנה ברקע בעברית מחכה רבע שעה לפני ניסיון נוסף
+const CREDITS_DIR = "system/credits-out/";
+const CREDITS_WAIT_MS = 15 * 60 * 1000;
+async function creditsOutRecently(): Promise<boolean> {
+  const paths = await store.listPaths(CREDITS_DIR).catch(() => [] as string[]);
+  return paths.some((p) => {
+    const ts = Number(p.slice(CREDITS_DIR.length).replace(/\.json$/, ""));
+    return ts && Date.now() - ts < CREDITS_WAIT_MS;
+  });
+}
 /** קטעים שנכשלו בהכנה ברקע בשעה האחרונה — לא מנסים אותם שוב עכשיו (האזנה עצמה עדיין יכולה לבקש אותם). */
 async function recentFailures(id: string): Promise<Set<number>> {
   const dir = P.failDir(id);
